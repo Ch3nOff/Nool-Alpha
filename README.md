@@ -1,6 +1,13 @@
-# Nool-Alpha-1.5B: Kaggle Pre-Training & Architecture
+# Nool-Alpha: Architectural Implementation & Empirical Benchmarks
 
-Implementation of **Nool-Alpha-1.5B** featuring **Grouped-Subspace Latent Attention (GSLA)** with **Decoupled RoPE** and **Heterogeneous Factorized MoE (HFK-MoE)**, optimized for high-throughput inference and scalable 3–5 hour training on Kaggle GPUs.
+[![Hugging Face Models](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Nool--Alpha--100M--Chat-blue)](https://huggingface.co/CH3NDev/Nool-Alpha-100M-Chat)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Empirical Analysis](https://img.shields.io/badge/Empirical%20Report-Verified-success)](NOOL_ALPHA_100M_EMPIRICAL_ANALYSIS.md)
+
+**Official Hugging Face Model:** [huggingface.co/CH3NDev/Nool-Alpha-100M-Chat](https://huggingface.co/CH3NDev/Nool-Alpha-100M-Chat)  
+**Empirical Benchmark Report:** [`NOOL_ALPHA_100M_EMPIRICAL_ANALYSIS.md`](NOOL_ALPHA_100M_EMPIRICAL_ANALYSIS.md)
+
+Implementation of **Nool-Alpha** featuring **Grouped-Subspace Latent Attention (GSLA)** with **Decoupled RoPE** and **Heterogeneous Factorized MoE (HFK-MoE)**, reducing KV-cache VRAM consumption by **87.8%** and active parameter FLOPs by **21.3%** compared to standard dense 100M–125M architectures (e.g. GPT-2 Small 124M).
 
 ---
 

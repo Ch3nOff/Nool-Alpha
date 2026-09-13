@@ -1,10 +1,27 @@
-# Nool-Alpha-100M
+---
+language:
+- id
+- en
+license: mit
+tags:
+- pytorch
+- causal-lm
+- safetensors
+- moe
+- gsla
+- indonesian
+pipeline_tag: text-generation
+---
 
-**Nool-Alpha-100M** is a bilingual & code causal language model based on an efficient hybrid architecture:
-- **GSLA (Grouped-Subspace Latent Attention)** with Decoupled RoPE and hybrid SWA (Sliding Window Attention).
-- **HFK-MoE (Heterogeneous Factorized MoE)**: Dense SwiGLU shared anchor + 8 low-rank experts (r=96, Top-2 routing).
-- **Global Residual Highway** ($\\tanh(\\alpha) \\cdot \\text{RMSNorm}(x_0)$).
-- **Logit Soft-Capping** (30.0).
+# Nool-Alpha-100M-Chat
+
+**Nool-Alpha-100M-Chat** is an efficient bilingual (Indonesian & English) and Python code causal language model based on an innovative hybrid architecture:
+- **GSLA (Grouped-Subspace Latent Attention)**: Compresses KV-cache by **87.8%** compared to standard dense MHA.
+- **HFK-MoE (Heterogeneous Factorized MoE)**: Dense SwiGLU shared anchor + 8 low-rank factorized experts (r=96, Top-2 routing) saving **21.3% FLOPs**.
+- **Global Residual Highway**: Stabilizes deep residual pathways with $\tanh(\alpha) \cdot \text{RMSNorm}(x_0)$.
+- **Logit Soft-Capping**: 30.0 tanh threshold preventing logit divergence.
+
+Official Code Repository: [GitHub - Ch3nOff/Nool-Alpha](https://github.com/Ch3nOff/Nool-Alpha)
 
 ## Model Details
 - **Architecture**: `nool_alpha`
