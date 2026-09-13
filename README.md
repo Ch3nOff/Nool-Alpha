@@ -51,16 +51,25 @@ Input Tokens ──> Embedding (tied) ──> [ Transformer Layer × 24 ] ──
 ## 📁 Repository Structure
 
 ```
-├── nool_alpha_kaggle_training.ipynb  # Self-contained Kaggle pre-training notebook
+├── nool_alpha_kaggle_training.ipynb     # Pre-training notebook (Stage 1)
+├── nool_alpha_100m_sft_training.ipynb   # Instruction SFT notebook (Stage 2)
+├── nool_alpha_100m_reasoning_sft.ipynb  # Deep Reasoning SFT notebook (Stage 2.5)
+├── nool_alpha_100m_bridge_chat.ipynb    # Bilingual Bridge & Daily Chat notebook (Stage 3)
 ├── nool_alpha/
-│   ├── __init__.py                   # Package exports
-│   ├── config.py                     # NoolAlphaConfig (full_1_5b & kaggle_3_5h)
-│   ├── model.py                      # PyTorch implementation of GSLA & HFK-MoE
-│   ├── dataset.py                    # Streaming Hugging Face dataset pipeline
-│   └── train.py                      # Time-budgeted training loop (CLI)
-├── tests/
-│   └── test_model.py                 # Unit tests & mathematical invariants
-├── generate_notebook.py              # Notebook generation script
+│   ├── __init__.py                      # Package exports
+│   ├── config.py                        # NoolAlphaConfig (full_1_5b & nool_100m)
+│   ├── model.py                         # PyTorch implementation of GSLA & HFK-MoE
+│   ├── dataset.py                       # Pre-training streaming dataset pipeline
+│   ├── sft_dataset.py                   # SFT instruction dataset
+│   ├── reasoning_dataset.py             # 7-stream reasoning dataset with rolling reservoir
+│   ├── bridge_chat_dataset.py           # Bilingual OPUS + UltraChat + Indonesian dialogue
+│   ├── reasoning_train.py               # 4.5h Deep Reasoning training engine
+│   ├── bridge_chat_train.py             # 3.5h Bilingual Bridge & Chat training engine
+│   └── train.py                         # Pre-training engine
+├── benchmark_intelligence_peers.py      # Intelligence benchmark vs GPT-2 & SmolLM-135M
+├── BENCHMARK_INTELLIGENCE_100M.md       # Empirical intelligence benchmark report
+├── generate_bridge_chat_notebook.py     # Stage 3 notebook generator script
+├── generate_reasoning_notebook.py       # Stage 2.5 notebook generator script
 └── README.md
 ```
 
@@ -86,19 +95,33 @@ Input Tokens ──> Embedding (tied) ──> [ Transformer Layer × 24 ] ──
 
 ---
 
-## 🔄 Melanjutkan Training via CLI / Script
+## 🧠 Tahap 2.5: Deep Reasoning & Thought-Chain SFT (4.5 Jam)
 
-Anda juga dapat menjalankan script `resume_training.py` secara langsung di terminal Kaggle atau workstation:
+Notebook `nool_alpha_100m_reasoning_sft.ipynb` melatih model dengan jejak penalaran mendalam (*DeepSeek-R1 style `<think>` traces*):
+- **7 Dataset Reasoning**: `cosmopedia-100k`, `Code-Feedback`, `OpenMathInstruct-1`, `R1-Distill-SFT`, `OpenThoughts-114k`, `Mixture-of-Thoughts`, dan `Math-Reasoning`.
+- **Zero-OOM Rolling Reservoir**: Buffer rolling 128 sampel (<5 MB RAM) mencegah memory crash pada Kaggle Host RAM.
+- **Label Masking**: Backpropagation hanya aktif pada jejak pemikiran `<think>` dan solusi final.
 
+---
+
+## 🌐 Tahap 3: Bilingual Bridge (En <-> Id) & Everyday Natural Conversation (3.5 Jam)
+
+Notebook `nool_alpha_100m_bridge_chat.ipynb` melatih model sebagai asisten percakapan dwibahasa dan obrolan natural sehari-hari:
+- **Dataset Blend**:
+  - 🌐 **35% OPUS Translation (`kaitchup/opus-Indonesian-to-English` & `hfxunlp/opus-100`)**: Penyelarasan semantik dwibahasa bolak-balik (Inggris $\leftrightarrow$ Indonesia).
+  - 💬 **35% UltraChat-200k (`HuggingFaceH4/ultrachat_200k`)**: Dialog multi-turn alami bahasa Inggris untuk percakapan sehari-hari yang luwes dan ramah.
+  - 🇮🇩 **30% Alpaca Indonesian Dialogue (`FreedomIntelligence/alpaca-gpt4-indonesian`)**: Interaksi tanya-jawab santun dan luwes dalam bahasa Indonesia.
+- **Budget Waktu**: 3.5 Jam (12.600 detik) dengan auto-save checkpoint.
+- **Safetensors Export**: Dilengkapi fix `.clone().contiguous().cpu()` untuk mengekspor tied weights tanpa memory-sharing duplicate errors.
+
+### Menjalankan Stage 3 via CLI:
 ```bash
-# Melanjutkan training dari checkpoint Kaggle dataset
-python resume_training.py \
-  --checkpoint /kaggle/input/datasets/chenstillstude/nool-cp/best_checkpoint.pt \
+python nool_alpha/bridge_chat_train.py \
+  --checkpoint exported_reasoning_model/model.safetensors \
   --hours 3.5 \
-  --target_steps 6000 \
-  --batch_size 8 \
+  --batch_size 4 \
   --grad_accum 4 \
-  --lr 3e-4
+  --lr 1e-4
 ```
 
 
