@@ -1,5 +1,5 @@
 """
-Multi-Source Randomized Streaming Reasoning Dataset for Nool-Alpha-100M.
+Memory-Safe Multi-Source Randomized Streaming Reasoning Dataset for Nool-Alpha-100M.
 
 Features:
   1. Integrates 7 premier reasoning, math, code, and synthetic instruction datasets:
@@ -10,11 +10,11 @@ Features:
      - open-thoughts/OpenThoughts-114k
      - open-r1/Mixture-of-Thoughts (all)
      - IFM/Math-Reasoning (math-thinking-qwen)
-  2. Anti-Memorization 3-Layer Randomization:
+  2. Zero-OOM Anti-Memorization Architecture:
+     - Rolling reservoir buffer of 128 items (< 5 MB Host RAM) instead of massive multi-thousand buffers.
+     - Raw string pre-capping (prompt <= 2000 chars, resp <= 4000 chars) to prevent 20k-token reasoning traces from blowing Host RAM.
      - Dynamic entropy seed (time_ns ^ pid) ensuring unique permutations per run.
-     - 10,000-sample streaming shuffle buffer per dataset stream.
-     - Random shard skip offsets (fast-forwarding 0-3000 items) to prevent reading from index 0.
-     - Multinomial weighted sampling across the 7 streams.
+     - Weighted multinomial sampling across the 7 streams.
   3. Prompt Loss Masking:
      - Labels for '### Instruction:\n{prompt}\n\n### Response:\n' are set to -100.
      - Active backpropagation loss exclusively on reasoning traces and final response tokens.
@@ -31,240 +31,170 @@ from torch.utils.data import IterableDataset
 from transformers import AutoTokenizer
 
 
-REASONING_DATASET_CONFIGS = [
-    {
-        "tag": "r1_distill",
-        "repo": "ServiceNow-AI/R1-Distill-SFT",
-        "config": "v1",
-        "weight": 0.20,
-    },
-    {
-        "tag": "openthoughts",
-        "repo": "open-thoughts/OpenThoughts-114k",
-        "config": None,
-        "weight": 0.15,
-    },
-    {
-        "tag": "mot",
-        "repo": "open-r1/Mixture-of-Thoughts",
-        "config": "all",
-        "weight": 0.15,
-    },
-    {
-        "tag": "openmath",
-        "repo": "nvidia/OpenMathInstruct-1",
-        "config": None,
-        "weight": 0.15,
-    },
-    {
-        "tag": "code_feedback",
-        "repo": "m-a-p/Code-Feedback",
-        "config": None,
-        "weight": 0.15,
-    },
-    {
-        "tag": "cosmopedia",
-        "repo": "HuggingFaceTB/cosmopedia-100k",
-        "config": None,
-        "weight": 0.10,
-    },
-    {
-        "tag": "math_reasoning",
-        "repo": "IFM/Math-Reasoning",
-        "config": "math-thinking-qwen",
-        "weight": 0.10,
-    },
-]
-
-
-def extract_prompt_response(item: Dict, tag: str) -> Optional[Tuple[str, str]]:
-    """Normalizes heterogenous dataset schemas into (prompt, response)."""
-    try:
-        if tag == "cosmopedia":
-            prompt = item.get("prompt", "").strip()
-            response = item.get("text", "").strip()
-            if prompt and response:
-                return prompt, response
-
-        elif tag == "code_feedback":
-            msgs = item.get("messages", [])
-            prompt, response = "", ""
-            for msg in msgs:
-                role = msg.get("role")
-                content = msg.get("content", "").strip()
-                if role == "user" and not prompt:
-                    prompt = content
-                elif role == "assistant" and prompt and not response:
-                    response = content
-            if prompt and response:
-                return prompt, response
-
-        elif tag == "openmath":
-            # Prefer correct solutions
-            if "is_correct" in item and not item["is_correct"]:
-                return None
-            prompt = item.get("question", "").strip()
-            response = item.get("generated_solution", "").strip()
-            if prompt and response:
-                return prompt, response
-
-        elif tag == "r1_distill":
-            # Check reannotated assistant content with <think> reasoning
-            response = item.get("reannotated_assistant_content", "").strip()
-            msgs = item.get("messages", []) or item.get("reannotated_messages", [])
-            prompt = ""
-            for msg in msgs:
-                if msg.get("role") == "user":
-                    prompt = msg.get("content", "").strip()
-                    break
-            if not response:
-                for msg in msgs:
-                    if msg.get("role") == "assistant":
-                        response = msg.get("content", "").strip()
-                        break
-            if prompt and response:
-                return prompt, response
-
-        elif tag == "openthoughts":
-            convs = item.get("conversations", [])
-            prompt, response = "", ""
-            for turn in convs:
-                sender = turn.get("from", "").lower()
-                val = turn.get("value", "").strip()
-                if sender in ["user", "human"] and not prompt:
-                    prompt = val
-                elif sender in ["assistant", "gpt"] and prompt and not response:
-                    response = val
-            if prompt and response:
-                return prompt, response
-
-        elif tag == "mot":
-            msgs = item.get("messages", [])
-            prompt, response = "", ""
-            for msg in msgs:
-                role = msg.get("role")
-                content = msg.get("content", "").strip()
-                if role == "user" and not prompt:
-                    prompt = content
-                elif role == "assistant" and prompt and not response:
-                    response = content
-            if prompt and response:
-                return prompt, response
-
-        elif tag == "math_reasoning":
-            raw_text = item.get("text", "").strip()
-            if "\n\n" in raw_text:
-                parts = raw_text.split("\n\n", 1)
-                prompt = parts[0].strip()
-                response = parts[1].strip()
-                if prompt and response:
-                    return prompt, response
-            elif "?" in raw_text:
-                parts = raw_text.split("?", 1)
-                prompt = parts[0].strip() + "?"
-                response = parts[1].strip()
-                if prompt and response:
-                    return prompt, response
-            if raw_text:
-                return "Solve the following mathematical problem step by step:", raw_text
-
-    except Exception:
-        return None
-
-    return None
-
-
-class RandomizedReasoningSFTDataset(IterableDataset):
+class MemorySafeReasoningDataset(IterableDataset):
     """
-    True Randomized Multi-Stream Reasoning Dataset.
-
-    Prevents memorization and sequential bias across restarts by:
-      - Instantiating non-deterministic seeds.
-      - Maintaining a 10,000-sample shuffle reservoir on each stream.
-      - Fast-forwarding streams by a random initial skip offset.
-      - Dynamically sampling streams via weighted multinomial distribution.
+    Zero-OOM streaming dataset with rolling reservoir anti-memorization sampling.
     """
 
     def __init__(
         self,
         tokenizer: AutoTokenizer,
         max_seq_len: int = 512,
-        buffer_size: int = 10000,
-        enable_random_skip: bool = True,
-        max_skip_offset: int = 3000,
+        reservoir_size: int = 128,
         seed: Optional[int] = None,
     ):
         super().__init__()
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
-        self.buffer_size = buffer_size
-        self.enable_random_skip = enable_random_skip
-        self.max_skip_offset = max_skip_offset
+        self.reservoir_size = reservoir_size
+        self.eos_token_id = tokenizer.eos_token_id or 50256
+        self.pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else self.eos_token_id
 
-        # Entropy-based seed if none provided
         if seed is None:
             self.seed = int(time.time_ns() % 1_000_000_007) ^ (os.getpid() << 16)
         else:
             self.seed = seed
 
         self.rng = random.Random(self.seed)
-        self.weights = [cfg["weight"] for cfg in REASONING_DATASET_CONFIGS]
-        self.dataset_configs = REASONING_DATASET_CONFIGS
 
-    def _create_stream(self, cfg: Dict, stream_seed: int) -> Iterator:
-        kwargs = {"split": "train", "streaming": True}
-        if cfg["config"]:
-            kwargs["name"] = cfg["config"]
-
-        ds = load_dataset(cfg["repo"], **kwargs)
-        # Apply streaming shuffle buffer
-        ds = ds.shuffle(buffer_size=self.buffer_size, seed=stream_seed)
-
-        # Apply random shard skip offset to avoid restarting at index 0
-        if self.enable_random_skip and self.max_skip_offset > 0:
-            skip_count = self.rng.randint(0, self.max_skip_offset)
+    def _stream_cosmopedia(self):
+        while True:
             try:
-                ds = ds.skip(skip_count)
+                ds = load_dataset("HuggingFaceTB/cosmopedia-100k", split="train", streaming=True)
+                for item in ds:
+                    p = item.get("prompt", "")
+                    r = item.get("text", "")
+                    if p and r:
+                        yield p[:2000].strip(), r[:4000].strip()
             except Exception:
-                pass
+                continue
 
-        return iter(ds)
+    def _stream_code_feedback(self):
+        while True:
+            try:
+                ds = load_dataset("m-a-p/Code-Feedback", split="train", streaming=True)
+                for item in ds:
+                    msgs = item.get("messages", [])
+                    p, r = "", ""
+                    for m in msgs:
+                        role = m.get("role")
+                        content = m.get("content", "")
+                        if role == "user" and not p:
+                            p = content
+                        elif role == "assistant" and p and not r:
+                            r = content
+                    if p and r:
+                        yield p[:2000].strip(), r[:4000].strip()
+            except Exception:
+                continue
 
-    def _format_and_tokenize(self, prompt: str, response: str) -> Optional[Dict[str, torch.Tensor]]:
-        prompt_text = f"### Instruction:\n{prompt}\n\n### Response:\n"
-        full_text = f"{prompt_text}{response}<|endoftext|>"
+    def _stream_openmath(self):
+        while True:
+            try:
+                ds = load_dataset("nvidia/OpenMathInstruct-1", split="train", streaming=True)
+                for item in ds:
+                    if "is_correct" in item and not item["is_correct"]:
+                        continue
+                    p = item.get("question", "")
+                    r = item.get("generated_solution", "")
+                    if p and r:
+                        yield p[:2000].strip(), r[:4000].strip()
+            except Exception:
+                continue
 
-        prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
-        full_ids = self.tokenizer.encode(full_text, add_special_tokens=False)
+    def _stream_r1_distill(self):
+        while True:
+            try:
+                ds = load_dataset("ServiceNow-AI/R1-Distill-SFT", "v1", split="train", streaming=True)
+                for item in ds:
+                    r = item.get("reannotated_assistant_content", "")
+                    msgs = item.get("messages", []) or item.get("reannotated_messages", [])
+                    p = ""
+                    for m in msgs:
+                        if m.get("role") == "user":
+                            p = m.get("content", "")
+                            break
+                    if not r:
+                        for m in msgs:
+                            if m.get("role") == "assistant":
+                                r = m.get("content", "")
+                                break
+                    if p and r:
+                        yield p[:2000].strip(), r[:4000].strip()
+            except Exception:
+                continue
 
-        if len(prompt_ids) >= self.max_seq_len - 10:
-            return None
+    def _stream_openthoughts(self):
+        while True:
+            try:
+                ds = load_dataset("open-thoughts/OpenThoughts-114k", split="train", streaming=True)
+                for item in ds:
+                    convs = item.get("conversations", [])
+                    p, r = "", ""
+                    for c in convs:
+                        sender = c.get("from", "").lower()
+                        val = c.get("value", "")
+                        if sender in ["user", "human"] and not p:
+                            p = val
+                        elif sender in ["assistant", "gpt"] and p and not r:
+                            r = val
+                    if p and r:
+                        yield p[:2000].strip(), r[:4000].strip()
+            except Exception:
+                continue
 
-        # Truncate to max_seq_len
-        if len(full_ids) > self.max_seq_len:
-            full_ids = full_ids[: self.max_seq_len]
+    def _stream_mot(self):
+        while True:
+            try:
+                ds = load_dataset("open-r1/Mixture-of-Thoughts", "all", split="train", streaming=True)
+                for item in ds:
+                    msgs = item.get("messages", [])
+                    p, r = "", ""
+                    for m in msgs:
+                        role = m.get("role")
+                        content = m.get("content", "")
+                        if role == "user" and not p:
+                            p = content
+                        elif role == "assistant" and p and not r:
+                            r = content
+                    if p and r:
+                        yield p[:2000].strip(), r[:4000].strip()
+            except Exception:
+                continue
 
-        input_ids = full_ids.copy()
-        # Loss Masking: Set all prompt tokens to -100
-        labels = full_ids.copy()
-        mask_len = min(len(prompt_ids), len(labels))
-        for i in range(mask_len):
-            labels[i] = -100
+    def _stream_math_reasoning(self):
+        while True:
+            try:
+                ds = load_dataset("IFM/Math-Reasoning", "math-thinking-qwen", split="train", streaming=True)
+                for item in ds:
+                    t = item.get("text", "")
+                    if "\n\n" in t:
+                        parts = t.split("\n\n", 1)
+                        yield parts[0][:2000].strip(), parts[1][:4000].strip()
+                    elif t:
+                        yield "Solve the following mathematical reasoning problem step by step:", t[:4000].strip()
+            except Exception:
+                continue
 
-        # Pad to max_seq_len
+    def _tokenize(self, prompt: str, resp: str):
+        prompt_txt = f"### Instruction:\n{prompt}\n\n### Response:\n"
+        prompt_ids = self.tokenizer.encode(prompt_txt, add_special_tokens=False)
+        resp_ids = self.tokenizer.encode(resp, add_special_tokens=False) + [self.eos_token_id]
+
+        total = len(prompt_ids) + len(resp_ids)
+        if total > self.max_seq_len:
+            max_resp = self.max_seq_len - len(prompt_ids)
+            if max_resp < 16:
+                return None
+            resp_ids = resp_ids[: max_resp - 1] + [self.eos_token_id]
+
+        input_ids = prompt_ids + resp_ids
+        labels = [-100] * len(prompt_ids) + resp_ids
+
         pad_len = self.max_seq_len - len(input_ids)
-        if pad_len > 0:
-            pad_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id or 0
-            input_ids = input_ids + [pad_id] * pad_len
-            labels = labels + [-100] * pad_len
-            attention_mask = [1] * len(full_ids) + [0] * pad_len
-        else:
-            attention_mask = [1] * len(input_ids)
-
-        # Verify active response tokens remain
-        active_tokens = sum(1 for l in labels if l != -100)
-        if active_tokens < 4:
-            return None
+        attention_mask = [1] * len(input_ids) + [0] * pad_len
+        input_ids = input_ids + [self.pad_token_id] * pad_len
+        labels = labels + [-100] * pad_len
 
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
@@ -272,53 +202,37 @@ class RandomizedReasoningSFTDataset(IterableDataset):
             "labels": torch.tensor(labels, dtype=torch.long),
         }
 
-    def __iter__(self) -> Iterator[Dict[str, torch.Tensor]]:
-        # Initialize each stream with an independent randomized seed
-        streams = []
-        active_indices = []
+    def __iter__(self):
+        streams = [
+            ("r1", self._stream_r1_distill()),
+            ("openthoughts", self._stream_openthoughts()),
+            ("mot", self._stream_mot()),
+            ("openmath", self._stream_openmath()),
+            ("code", self._stream_code_feedback()),
+            ("cosmopedia", self._stream_cosmopedia()),
+            ("math_qwen", self._stream_math_reasoning()),
+        ]
+        weights = [0.20, 0.15, 0.15, 0.15, 0.15, 0.10, 0.10]
+        stream_indices = list(range(len(streams)))
 
-        for idx, cfg in enumerate(self.dataset_configs):
-            stream_seed = (self.seed + idx * 7919) % (2**31 - 1)
-            try:
-                s = self._create_stream(cfg, stream_seed)
-                streams.append(s)
-                active_indices.append(idx)
-            except Exception as e:
-                print(f"[!] Warning: Failed to initialize stream '{cfg['tag']}': {e}")
-                streams.append(None)
-
-        if not active_indices:
-            raise RuntimeError("No reasoning dataset streams could be initialized.")
-
-        while active_indices:
-            # Weighted random selection of stream
-            current_weights = [self.weights[i] for i in active_indices]
-            total_w = sum(current_weights)
-            norm_weights = [w / total_w for w in current_weights]
-            chosen_idx = self.rng.choices(active_indices, weights=norm_weights, k=1)[0]
-
-            stream = streams[chosen_idx]
-            tag = self.dataset_configs[chosen_idx]["tag"]
-
-            try:
-                item = next(stream)
-            except StopIteration:
-                # Stream exhausted, re-seed and restart stream
-                new_seed = self.rng.randint(0, 2**31 - 1)
+        def get_next_sample():
+            while True:
+                chosen_idx = self.rng.choices(stream_indices, weights=weights, k=1)[0]
+                _, stream = streams[chosen_idx]
                 try:
-                    streams[chosen_idx] = self._create_stream(self.dataset_configs[chosen_idx], new_seed)
-                    item = next(streams[chosen_idx])
+                    p, r = next(stream)
+                    tok = self._tokenize(p, r)
+                    if tok is not None:
+                        return tok
                 except Exception:
-                    active_indices.remove(chosen_idx)
                     continue
-            except Exception:
-                continue
 
-            extracted = extract_prompt_response(item, tag)
-            if extracted is None:
-                continue
+        reservoir = []
+        for _ in range(self.reservoir_size):
+            reservoir.append(get_next_sample())
 
-            prompt, response = extracted
-            tokenized = self._format_and_tokenize(prompt, response)
-            if tokenized is not None:
-                yield tokenized
+        while True:
+            pick_idx = self.rng.randint(0, len(reservoir) - 1)
+            sample = reservoir[pick_idx]
+            reservoir[pick_idx] = get_next_sample()
+            yield sample
