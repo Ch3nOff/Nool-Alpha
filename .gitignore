@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Large Model Binary Weights (>100MB, exceeding GitHub file limits)
+*.pt
+*.bin
+*.pth
+*.safetensors
+
+# IDE, OS, & Temporary Files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.ipynb_checkpoints/
