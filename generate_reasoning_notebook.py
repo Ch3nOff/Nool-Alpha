@@ -905,7 +905,7 @@ best_ckpt_file = "best_reasoning_checkpoint.pt" if os.path.exists("best_reasonin
 ckpt = torch.load(best_ckpt_file, map_location="cpu", weights_only=False)
 raw_state = ckpt.get("model_state_dict", ckpt)
 
-clean_state = {k: v.contiguous() for k, v in raw_state.items()}
+clean_state = {k: v.clone().contiguous().cpu() for k, v in raw_state.items()}
 save_file(clean_state, os.path.join(export_dir, "model.safetensors"))
 
 config_dict = {
