@@ -108,8 +108,8 @@ def train_1_5b(
     output_dir: str = "checkpoints/nool_alpha_1_5b",
     total_hours: float = 4.0,
     max_steps: int = 5000,
-    batch_size: int = 2,
-    grad_accum_steps: int = 8,
+    batch_size: int = 1,
+    grad_accum_steps: int = 16,
     learning_rate: float = 1.5e-4,
     min_lr: float = 1.0e-5,
     warmup_steps: int = 150,
@@ -121,13 +121,23 @@ def train_1_5b(
     device = torch.device(device_name if torch.cuda.is_available() and device_name == "cuda" else "cpu")
     print(f"[+] Initializing Nool-Alpha-1.5B Distillation on: {device}")
 
+    if torch.cuda.is_available():
+        if torch.cuda.is_bf16_supported():
+            compute_dtype = torch.bfloat16
+            print("[+] Using native bfloat16 mixed precision")
+        else:
+            compute_dtype = torch.float16
+            print("[+] Using native float16 precision (T4/P100 architecture)")
+    else:
+        compute_dtype = torch.float32
+
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # 1.5B Architecture Configuration
+    # 1.5B Architecture Configuration (1.48B Calibrated)
     config = NoolAlphaConfig.full_1_5b(vocab_size=50257, gradient_checkpointing=True)
-    model = NoolAlphaForCausalLM(config).to(device)
+    model = NoolAlphaForCausalLM(config).to(device=device, dtype=compute_dtype)
 
     total_p, active_p = model.get_num_params()
     print(f"[+] Model Specs: {total_p/1e6:.1f}M Total Params | {active_p/1e6:.1f}M Active Params per token ({active_p/total_p*100:.1f}% compute)")
@@ -183,6 +193,9 @@ def train_1_5b(
         min_lr_ratio=min_lr / learning_rate,
     )
 
+    use_scaler = (device.type == "cuda" and compute_dtype == torch.float16)
+    scaler = torch.amp.GradScaler('cuda', enabled=use_scaler)
+
     max_seconds = total_hours * 3600.0
     start_time = time.time()
     step = 0
@@ -219,13 +232,13 @@ def train_1_5b(
             labels = batch["labels"].to(device)
 
             if device.type == "cuda":
-                with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+                with torch.amp.autocast(device_type="cuda", dtype=compute_dtype):
                     logits, loss, aux_loss, _ = model(input_ids, labels)
             else:
                 logits, loss, aux_loss, _ = model(input_ids, labels)
 
             scaled_loss = loss / grad_accum_steps
-            scaled_loss.backward()
+            scaler.scale(scaled_loss).backward()
 
             step_loss += loss.item() / grad_accum_steps
             step_aux += aux_loss.item() / grad_accum_steps
@@ -233,8 +246,10 @@ def train_1_5b(
 
             del logits, loss, aux_loss
 
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
         scheduler.step()
         step += 1
 
@@ -305,8 +320,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Nool-Alpha-1.5B Distillation Training")
     parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint to resume from")
     parser.add_argument("--hours", type=float, default=4.0, help="Training time budget in hours")
-    parser.add_argument("--batch_size", type=int, default=2, help="Per-device batch size")
-    parser.add_argument("--grad_accum", type=int, default=8, help="Gradient accumulation steps")
+    parser.add_argument("--batch_size", type=int, default=1, help="Per-device batch size")
+    parser.add_argument("--grad_accum", type=int, default=16, help="Gradient accumulation steps")
     parser.add_argument("--lr", type=float, default=1.5e-4, help="Peak learning rate")
     args = parser.parse_args()
 

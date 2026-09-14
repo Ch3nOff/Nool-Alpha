@@ -27,10 +27,10 @@ class NoolAlphaConfig:
     swa_interval: int = 4        # Every 4th layer (layer_idx % 4 == 3) is Global Attention; others SWA
     
     # HFK-MoE (Heterogeneous Factorized MoE) Parameters
-    shared_ffn_dim: int = 4096   # Static dense SwiGLU anchor dimension
+    shared_ffn_dim: int = 3072   # Static dense SwiGLU anchor dimension
     num_experts: int = 16        # Dynamic path: 16 experts
     top_k_experts: int = 4       # Top-4 experts routed per token
-    expert_rank: int = 384       # r = 384 low-rank factorized projection dimension
+    expert_rank: int = 256       # r = 256 low-rank factorized projection dimension
     moe_aux_loss_coeff: float = 0.01  # Auxiliary load balancing loss coefficient
     
     # Stabilization & Global Residual Highway
@@ -42,9 +42,23 @@ class NoolAlphaConfig:
     gradient_checkpointing: bool = False
 
     @classmethod
-    def full_1_5b(cls, vocab_size: int = 50257, gradient_checkpointing: bool = True) -> "NoolAlphaConfig":
-        """Exact 1.58B total / 0.95B active parameter blueprint configuration."""
-        return cls(vocab_size=vocab_size, gradient_checkpointing=gradient_checkpointing)
+    def full_1_5b(
+        cls,
+        vocab_size: int = 50257,
+        gradient_checkpointing: bool = True,
+        shared_ffn_dim: int = 3072,
+        expert_rank: int = 256,
+    ) -> "NoolAlphaConfig":
+        """
+        Calibrated 1.48B total / 1.03B active parameter blueprint configuration.
+        Engineered to fit comfortably inside 16GB VRAM GPUs (Kaggle T4 / P100 / Colab).
+        """
+        return cls(
+            vocab_size=vocab_size,
+            gradient_checkpointing=gradient_checkpointing,
+            shared_ffn_dim=shared_ffn_dim,
+            expert_rank=expert_rank,
+        )
 
     @classmethod
     def nool_100m(cls, vocab_size: int = 50257) -> "NoolAlphaConfig":

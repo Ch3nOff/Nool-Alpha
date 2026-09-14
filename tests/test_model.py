@@ -20,10 +20,10 @@ def test_config_dimensions():
     assert cfg.d_c == 448, f"Expected d_c=448, got {cfg.d_c}"
     assert cfg.d_pe == 64, f"Expected d_pe=64, got {cfg.d_pe}"
     assert cfg.d_c + cfg.d_pe == 512, f"KV cache dimension per token must be 512"
-    assert cfg.shared_ffn_dim == 4096, f"Expected shared_ffn_dim=4096, got {cfg.shared_ffn_dim}"
+    assert cfg.shared_ffn_dim == 3072, f"Expected shared_ffn_dim=3072, got {cfg.shared_ffn_dim}"
     assert cfg.num_experts == 16, f"Expected 16 experts, got {cfg.num_experts}"
     assert cfg.top_k_experts == 4, f"Expected top_k=4, got {cfg.top_k_experts}"
-    assert cfg.expert_rank == 384, f"Expected rank=384, got {cfg.expert_rank}"
+    assert cfg.expert_rank == 256, f"Expected rank=256, got {cfg.expert_rank}"
     assert cfg.rope_theta == 500000.0, f"Expected theta=500000, got {cfg.rope_theta}"
     assert cfg.logit_soft_cap == 30.0, f"Expected logit soft-cap=30.0, got {cfg.logit_soft_cap}"
     print("  [PASSED] Config dimensions match blueprint.")

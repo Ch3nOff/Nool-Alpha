@@ -45,12 +45,13 @@ Notebook mandiri (*standalone*) ini menjalankan training dan distilasi penalaran
 
 ---
 
-### 🛡️ Tiga Pengawal Memori (Muat di 16GB GPU VRAM):
-Model berukuran 1.5 Miliar parameter biasanya memakan ~18 GB VRAM jika menggunakan AdamW biasa. Notebook ini menerapkan 3 teknik efisiensi kelas industri:
-1. **8-bit AdamW (`bitsandbytes.optim.AdamW8bit`)**: Memangkas VRAM optimizer dari 12 GB menjadi **3.0 GB**.
-2. **Gradient Checkpointing (`torch.utils.checkpoint`)**: Mengurangi VRAM aktivasi dari ~5 GB menjadi **<1 GB**.
-3. **AMP bfloat16 / fp16**: Bobot model hanya berukuran **~3.1 GB**.
-   - **Total Beban VRAM:** $\approx \mathbf{7.2\text{ GB}}$ dari kuota 16 GB GPU Kaggle (tersedia sisa *headroom* $>50\%$).
+### 🛡️ Empat Pilar Pengawal Memori (Muat Nyaman di 16GB GPU VRAM):
+Model berukuran 1.5 Miliar parameter biasanya memakan ~18 GB VRAM jika menggunakan FP32 dan AdamW standar. Notebook ini menerapkan 4 pilar optimasi memori:
+1. **Inisialisasi Bobot 16-bit (FP16 / BF16)**: Bobot model dialokasikan langsung sebesar **~2.96 GB** (menghindari jebakan FP32 7.7 GB).
+2. **8-bit AdamW (`bitsandbytes.optim.AdamW8bit`)**: Memangkas state optimizer dari 12 GB menjadi **2.96 GB**.
+3. **Gradient Checkpointing (`use_reentrant=False`)**: Memangkas aktivasi forward hingga **< 0.5 GB**.
+4. **Anti-Fragmentasi CUDA & Micro-Batching (Batch 1, Accum 16)**:
+   - **Total Puncak VRAM:** $\approx \mathbf{9.3\text{ GB}}$ dari kuota 14.56 GB GPU Kaggle (tersedia sisa *headroom* $> 5\text{ GB}$).
 
 ---
 
@@ -62,9 +63,12 @@ Model berukuran 1.5 Miliar parameter biasanya memakan ~18 GB VRAM jika menggunak
 
     # Cell 1: Environment Setup & bitsandbytes
     add_code("""# [Cell 1] Environment Setup & Low-Memory Dependencies
+import os
+# Prevent CUDA memory fragmentation on 16GB GPUs
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 !pip install -q datasets transformers accelerate rich safetensors bitsandbytes matplotlib
 
-import os
 import sys
 import math
 import time
@@ -87,6 +91,14 @@ print(f"Active Device: {device}")
 if torch.cuda.is_available():
     print(f"GPU Name: {torch.cuda.get_device_name(0)}")
     print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / (1024**3):.2f} GB")
+    if torch.cuda.is_bf16_supported():
+        compute_dtype = torch.bfloat16
+        print("⚡ Native bfloat16 hardware acceleration active (Ampere/Ada/Hopper)")
+    else:
+        compute_dtype = torch.float16
+        print("⚡ Native float16 hardware acceleration active (Turing T4 / Pascal P100)")
+else:
+    compute_dtype = torch.float32
 
 try:
     import bitsandbytes as bnb
@@ -112,10 +124,10 @@ class NoolAlphaConfig:
     max_position_embeddings: int = 8192
     sliding_window: int = 1024
     swa_interval: int = 4
-    shared_ffn_dim: int = 4096
+    shared_ffn_dim: int = 3072
     num_experts: int = 16
     top_k_experts: int = 4
-    expert_rank: int = 384
+    expert_rank: int = 256
     moe_aux_loss_coeff: float = 0.01
     highway_alpha_init: float = 0.05
     logit_soft_cap: float = 30.0
@@ -347,15 +359,14 @@ class NoolAlphaForCausalLM(nn.Module):
             cache = past_key_values[i] if past_key_values else None
             if getattr(self.config, "gradient_checkpointing", False) and self.training and not use_cache:
                 def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        return module(*inputs)
+                    def custom_forward(hidden_states, mask):
+                        out, aux, _ = module(hidden_states, attention_mask=mask, kv_cache=None, use_cache=False)
+                        return out, aux
                     return custom_forward
-                h, aux, c = torch.utils.checkpoint.checkpoint(
+                h, aux = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(layer),
                     h,
                     attention_mask,
-                    cache,
-                    use_cache,
                     use_reentrant=False,
                 )
             else:
@@ -392,7 +403,7 @@ print("[OK] Nool-Alpha-1.5B architecture compiled with Gradient Checkpointing!")
     # Cell 3: Parameter Verification & Memory Profiling
     add_code("""# [Cell 3] Model Initialization & Parameter/VRAM Profiling
 config = NoolAlphaConfig.full_1_5b()
-model = NoolAlphaForCausalLM(config).to(device)
+model = NoolAlphaForCausalLM(config).to(device=device, dtype=compute_dtype)
 
 total_p, active_p = model.get_num_params()
 print("=" * 65)
@@ -400,8 +411,10 @@ print(f"🌟 Nool-Alpha-1.5B Architecture Profile:")
 print(f"Total Parameters      : {total_p/1e6:.1f}M ({total_p/1e9:.2f}B)")
 print(f"Active Parameters/Tok : {active_p/1e6:.1f}M ({active_p/1e9:.2f}B) - {active_p/total_p*100:.1f}% Active Compute")
 print(f"KV-Cache Footprint    : 512 floats/token/layer (vs 4,096 in Dense MHA) -> 87.5% VRAM Reduction")
-print(f"Estimated Weights VRAM: ~{total_p * 2 / (1024**3):.2f} GB (in bfloat16)")
+print(f"Compute Dtype         : {compute_dtype}")
+print(f"Model Weights VRAM    : ~{total_p * 2 / (1024**3):.2f} GB (16-bit precision)")
 print(f"Estimated 8-bit AdamW : ~{total_p * 2 / (1024**3):.2f} GB (vs {total_p * 8 / (1024**3):.1f} GB standard AdamW)")
+print(f"Expected Peak VRAM    : ~{(total_p * 2 * 2 + total_p * 2) / (1024**3) + 0.4:.2f} GB (< 9.5 GB, easily fits 14.56 GB GPU!)")
 print("=" * 65)
 
 tokenizer = AutoTokenizer.from_pretrained("gpt2")
@@ -645,13 +658,16 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Hyperparameters for 1.5B
 MAX_TRAINING_HOURS = 4.0
 TARGET_MAX_STEPS = 4000
-BATCH_SIZE = 2          # Per-device batch size
-GRAD_ACCUM_STEPS = 8    # Effective batch = 16 sequences (8,192 tokens/step)
+BATCH_SIZE = 1          # 1 sequence per forward step (< 0.5 GB activation memory)
+GRAD_ACCUM_STEPS = 16   # Effective batch = 16 sequences (8,192 tokens/step)
 PEAK_LR = 1.5e-4
 MIN_LR = 1.0e-5
 WARMUP_STEPS = 100
 LOG_INTERVAL = 25
 EVAL_INTERVAL = 150
+
+use_scaler = (device.type == "cuda" and compute_dtype == torch.float16)
+scaler = torch.amp.GradScaler('cuda', enabled=use_scaler)
 
 dataset = MemorySafeDistillDataset(tokenizer, max_seq_len=512, reservoir_size=128)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE)
@@ -768,13 +784,13 @@ while step < TARGET_MAX_STEPS:
         labels = batch["labels"].to(device)
 
         if device.type == "cuda":
-            with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+            with torch.amp.autocast(device_type="cuda", dtype=compute_dtype):
                 logits, loss, aux_loss, _ = model(input_ids, labels)
         else:
             logits, loss, aux_loss, _ = model(input_ids, labels)
 
         scaled_loss = loss / GRAD_ACCUM_STEPS
-        scaled_loss.backward()
+        scaler.scale(scaled_loss).backward()
 
         step_loss += loss.item() / GRAD_ACCUM_STEPS
         step_aux += aux_loss.item() / GRAD_ACCUM_STEPS
@@ -782,8 +798,10 @@ while step < TARGET_MAX_STEPS:
 
         del logits, loss, aux_loss
 
+    scaler.unscale_(optimizer)
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-    optimizer.step()
+    scaler.step(optimizer)
+    scaler.update()
     scheduler.step()
     step += 1
 
@@ -923,10 +941,10 @@ config_dict = {
     "head_dim": 128,
     "d_c": 448,
     "d_pe": 64,
-    "shared_ffn_dim": 4096,
+    "shared_ffn_dim": 3072,
     "num_experts": 16,
     "top_k_experts": 4,
-    "expert_rank": 384,
+    "expert_rank": 256,
     "logit_soft_cap": 30.0,
     "scale": "1.5B_flagship",
     "best_loss": ckpt.get("loss", "N/A"),
