@@ -55,19 +55,25 @@ Input Tokens ──> Embedding (tied) ──> [ Transformer Layer × 24 ] ──
 ├── nool_alpha_100m_sft_training.ipynb   # Instruction SFT notebook (Stage 2)
 ├── nool_alpha_100m_reasoning_sft.ipynb  # Deep Reasoning SFT notebook (Stage 2.5)
 ├── nool_alpha_100m_bridge_chat.ipynb    # Bilingual Bridge & Daily Chat notebook (Stage 3)
+├── nool_alpha_1_5b_kaggle.ipynb         # Nool-Alpha-1.5B Flagship Distillation notebook
 ├── nool_alpha/
 │   ├── __init__.py                      # Package exports
 │   ├── config.py                        # NoolAlphaConfig (full_1_5b & nool_100m)
-│   ├── model.py                         # PyTorch implementation of GSLA & HFK-MoE
+│   ├── model.py                         # PyTorch GSLA & HFK-MoE with Gradient Checkpointing
 │   ├── dataset.py                       # Pre-training streaming dataset pipeline
 │   ├── sft_dataset.py                   # SFT instruction dataset
 │   ├── reasoning_dataset.py             # 7-stream reasoning dataset with rolling reservoir
 │   ├── bridge_chat_dataset.py           # Bilingual OPUS + UltraChat + Indonesian dialogue
+│   ├── distill_dataset.py               # 1.5B teacher distillation dataset
 │   ├── reasoning_train.py               # 4.5h Deep Reasoning training engine
 │   ├── bridge_chat_train.py             # 3.5h Bilingual Bridge & Chat training engine
+│   ├── distill_train.py                 # 1.5B 8-bit AdamW distillation engine
 │   └── train.py                         # Pre-training engine
 ├── benchmark_intelligence_peers.py      # Intelligence benchmark vs GPT-2 & SmolLM-135M
 ├── BENCHMARK_INTELLIGENCE_100M.md       # Empirical intelligence benchmark report
+├── COMPLETE_OVERALL_EMPIRICAL_REPORT.md # 100% empirical unpredicted lifecycle report
+├── COMPLETE_OVERALL_EMPIRICAL_REPORT.docx # Word document version of complete report
+├── generate_1_5b_notebook.py            # 1.5B Kaggle notebook generator script
 ├── generate_bridge_chat_notebook.py     # Stage 3 notebook generator script
 ├── generate_reasoning_notebook.py       # Stage 2.5 notebook generator script
 └── README.md
@@ -122,6 +128,35 @@ python nool_alpha/bridge_chat_train.py \
   --batch_size 4 \
   --grad_accum 4 \
   --lr 1e-4
+```
+
+---
+
+## 🚀 Nool-Alpha-1.5B: Flagship Architecture & Teacher Distillation
+
+Model skala unggulan berkapasitas **~1.93B Total / ~1.25B Active Parameters** (atau ~1.58B pada varian compact) yang dilatih menggunakan strategi **Offline Distillation** dari model Teacher unggulan (*Qwen-2.5-72B* dan *DeepSeek-R1*).
+
+### 🛡️ Optimasi Memori 16GB GPU VRAM (Kaggle T4/P100):
+1. **8-bit AdamW (`bitsandbytes.optim.AdamW8bit`)**: Memangkas VRAM optimizer dari 12 GB menjadi **3.0 GB**.
+2. **Gradient Checkpointing (`torch.utils.checkpoint`)**: Mengurangi VRAM aktivasi dari ~5 GB menjadi **<1 GB**.
+3. **AMP bfloat16**: Bobot model hanya berukuran **~3.1 GB**.
+   - **Total VRAM Terpakai:** $\approx \mathbf{7.2\text{ GB}}$ dari kuota 16 GB GPU Kaggle (aman dengan sisa headroom $>50\%$).
+
+### 🧠 Sumber Dataset Distilasi:
+- **40% Teacher Reasoning**: `ServiceNow-AI/R1-Distill-SFT`, `open-thoughts/OpenThoughts-114k`, `nvidia/OpenMathInstruct-1`.
+- **25% Algoritma & Kode Python**: `m-a-p/Code-Feedback`.
+- **20% Pengetahuan Global**: `HuggingFaceFW/fineweb-edu` (`sample-10BT`).
+- **15% Percakapan Dwibahasa**: `FreedomIntelligence/alpaca-gpt4-indonesian` & `HuggingFaceH4/ultrachat_200k`.
+
+### Menjalankan Training 1.5B via CLI / Kaggle:
+- **Kaggle Notebook**: Upload dan jalankan [`nool_alpha_1_5b_kaggle.ipynb`](nool_alpha_1_5b_kaggle.ipynb).
+- **CLI Workstation**:
+```bash
+python nool_alpha/distill_train.py \
+  --hours 4.0 \
+  --batch_size 2 \
+  --grad_accum 8 \
+  --lr 1.5e-4
 ```
 
 

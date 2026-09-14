@@ -39,11 +39,12 @@ class NoolAlphaConfig:
     rms_norm_eps: float = 1e-6
     tie_word_embeddings: bool = True  # Weight tying between embedding and LM head
     dropout: float = 0.0
+    gradient_checkpointing: bool = False
 
     @classmethod
-    def full_1_5b(cls) -> "NoolAlphaConfig":
+    def full_1_5b(cls, vocab_size: int = 50257, gradient_checkpointing: bool = True) -> "NoolAlphaConfig":
         """Exact 1.58B total / 0.95B active parameter blueprint configuration."""
-        return cls()
+        return cls(vocab_size=vocab_size, gradient_checkpointing=gradient_checkpointing)
 
     @classmethod
     def nool_100m(cls, vocab_size: int = 50257) -> "NoolAlphaConfig":

@@ -4,6 +4,7 @@ from typing import Optional, Tuple, List, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint
 
 from .config import NoolAlphaConfig
 
@@ -460,12 +461,27 @@ class NoolAlphaForCausalLM(nn.Module):
 
         for idx, layer in enumerate(self.layers):
             layer_cache = past_key_values[idx] if past_key_values is not None else None
-            hidden_states, aux_loss, next_cache = layer(
-                hidden_states,
-                attention_mask=attention_mask,
-                kv_cache=layer_cache,
-                use_cache=use_cache,
-            )
+            if getattr(self.config, "gradient_checkpointing", False) and self.training and not use_cache:
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        return module(*inputs)
+                    return custom_forward
+
+                hidden_states, aux_loss, next_cache = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(layer),
+                    hidden_states,
+                    attention_mask,
+                    layer_cache,
+                    use_cache,
+                    use_reentrant=False,
+                )
+            else:
+                hidden_states, aux_loss, next_cache = layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    kv_cache=layer_cache,
+                    use_cache=use_cache,
+                )
             total_aux_loss = total_aux_loss + aux_loss
             if use_cache:
                 next_caches.append(next_cache)
