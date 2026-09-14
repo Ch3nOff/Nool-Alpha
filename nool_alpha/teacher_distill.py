@@ -180,12 +180,9 @@ def train_teacher_distill(
     for param in teacher_model.parameters():
         param.requires_grad = False
 
-    # 2. Load Student
+    # 2. Load Student (FP32 master weights with AMP for numerical stability)
     student_config = NoolAlphaConfig.nool_100m(vocab_size=50257)
-    student_model = NoolAlphaForCausalLM(student_config).to(
-        device=device,
-        dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-    )
+    student_model = NoolAlphaForCausalLM(student_config).to(device=device)
     student_tokenizer = AutoTokenizer.from_pretrained("gpt2")
     if student_tokenizer.pad_token_id is None:
         student_tokenizer.pad_token_id = student_tokenizer.eos_token_id
@@ -201,7 +198,7 @@ def train_teacher_distill(
 
         m_dict = student_model.state_dict()
         matched = {
-            k: v.to(device=device, dtype=student_model.embed_tokens.weight.dtype)
+            k: v.to(device=device, dtype=torch.float32)
             for k, v in raw_state.items()
             if k in m_dict and v.shape == m_dict[k].shape
         }

@@ -37,7 +37,7 @@ def build_teacher_distill_notebook():
 
     # Header
     add_markdown(r"""# 🎓 Nool-Alpha-100M: Live Teacher-Student Distillation Engine
-### 👨‍🏫 Teacher: `Qwen/Qwen2.5-1.5B-Instruct` (4-bit NF4) | 🧑‍🎓 Student: `Nool-Alpha-100M` (FP16)
+### 👨‍🏫 Teacher: `Qwen/Qwen2.5-1.5B-Instruct` (4-bit NF4) | 🧑‍🎓 Student: `Nool-Alpha-100M` (AMP Mixed Precision)
 
 Notebook ini menjalankan **Live Knowledge Distillation & Instruction Alignment** untuk menyembuhkan masalah halusinasi (*"pertanyaan A dijawab B"*) pada model **Nool-Alpha-100M**.
 
@@ -47,7 +47,7 @@ Notebook ini menjalankan **Live Knowledge Distillation & Instruction Alignment**
 | Komponen | Presisi | Beban VRAM | Keterangan |
 | :--- | :--- | :--- | :--- |
 | **Teacher (Qwen-2.5-1.5B)** | 4-bit (NF4) | **~1.2 GB** | Guru penilai & pembuat teladan respons |
-| **Student (Nool-Alpha-100M)**| FP16 + 8-bit AdamW | **~1.2 GB** | Model murid yang dilatih |
+| **Student (Nool-Alpha-100M)**| FP32 Master + AMP + 8-bit AdamW | **~1.1 GB** | Model murid yang dilatih |
 | **Aktivasi & Workspace** | Batch 2, Accum 8 | **~0.8 GB** | Sangat ringan |
 | **TOTAL VRAM** | | **$\approx \mathbf{3.2\text{ GB}}$** | **Sisa > 11 GB Bebas di GPU T4!** 🟢 |
 
@@ -376,9 +376,9 @@ for param in teacher_model.parameters():
 t_vram = torch.cuda.memory_allocated() / (1024**3) if torch.cuda.is_available() else 0.0
 print(f"✅ Teacher Loaded! Current VRAM: {t_vram:.2f} GB")
 
-print("\\n🧑‍🎓 Initializing Student Model: 'Nool-Alpha-100M' in FP16...")
+print("\\n🧑‍🎓 Initializing Student Model: 'Nool-Alpha-100M' (FP32 Master Weights with AMP)...")
 student_config = NoolAlphaConfig.nool_100m(vocab_size=50257)
-student_model = NoolAlphaForCausalLM(student_config).to(device=device, dtype=torch.float16)
+student_model = NoolAlphaForCausalLM(student_config).to(device=device)
 
 student_tokenizer = AutoTokenizer.from_pretrained("gpt2")
 if student_tokenizer.pad_token_id is None:
@@ -388,10 +388,10 @@ tot_p, act_p = student_model.get_num_params()
 s_vram = torch.cuda.memory_allocated() / (1024**3) if torch.cuda.is_available() else 0.0
 print("=" * 65)
 print(f"📊 DUAL MODEL VRAM FOOTPRINT:")
-print(f"  • Teacher (Qwen-2.5-1.5B 4-bit) : ~{t_vram:.2f} GB")
-print(f"  • Student (Nool-Alpha-100M FP16): ~{s_vram - t_vram:.2f} GB ({tot_p/1e6:.1f}M params, {act_p/1e6:.1f}M active)")
-print(f"  • Total VRAM Allocated          : {s_vram:.2f} GB / 14.56 GB")
-print(f"  • Sisa Headroom Bebas           : ~{14.56 - s_vram:.2f} GB (Super Aman! 🟢)")
+print(f"  • Teacher (Qwen-2.5-1.5B 4-bit)   : ~{t_vram:.2f} GB")
+print(f"  • Student (Nool-Alpha-100M FP32)  : ~{s_vram - t_vram:.2f} GB ({tot_p/1e6:.1f}M params, {act_p/1e6:.1f}M active)")
+print(f"  • Total VRAM Allocated            : {s_vram:.2f} GB / 14.56 GB")
+print(f"  • Sisa Headroom Bebas             : ~{14.56 - s_vram:.2f} GB (Super Aman! 🟢)")
 print("=" * 65)""")
 
     # Cell 4: Checkpoint Auto-Discovery
@@ -429,7 +429,7 @@ if CKPT_PATH and os.path.exists(CKPT_PATH):
         raw_state = ckpt.get("model_state_dict", ckpt)
     
     m_dict = student_model.state_dict()
-    matched = {k: v.to(device=device, dtype=torch.float16) for k, v in raw_state.items() if k in m_dict and v.shape == m_dict[k].shape}
+    matched = {k: v.to(device=device, dtype=torch.float32) for k, v in raw_state.items() if k in m_dict and v.shape == m_dict[k].shape}
     m_dict.update(matched)
     student_model.load_state_dict(m_dict)
     print(f"✅ Berhasil memuat {len(matched)} matching tensors ke Nool-Alpha-100M!")
