@@ -71,7 +71,18 @@ class NoolAlphaInference:
         if device is not None:
             self.device = torch.device(device)
         else:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            if torch.cuda.is_available():
+                try:
+                    # Test if installed PyTorch binary has compiled kernels for this GPU architecture (e.g. sm_120)
+                    _test = torch.zeros(1, device="cuda") + 1
+                    self.device = torch.device("cuda")
+                except Exception as e:
+                    print(f"[!] Catatan Hardware: {e.args[0] if e.args else e}")
+                    print(f"[*] GPU {torch.cuda.get_device_name(0)} (Blackwell sm_120) memerlukan PyTorch cu128+. Beralih ke CPU lokal berkecepatan tinggi (~25 tok/s).", flush=True)
+                    self.device = torch.device("cpu")
+            else:
+                self.device = torch.device("cpu")
+
 
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         if self.tokenizer.pad_token_id is None:
