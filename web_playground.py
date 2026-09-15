@@ -1,7 +1,7 @@
 """
-Modern Interactive Web Playground for Nool-Alpha-100M.
+Modern Interactive Web Playground & Chat UI for Nool-Alpha-100M.
 Self-contained Python HTTP server with real-time token streaming (SSE),
-checkpoint switching, parameter tuning, and multi-domain presets.
+conversational chat bubbles, checkpoint switching, and factual grounding presets.
 """
 
 import argparse
@@ -25,30 +25,36 @@ if sys.platform == "win32":
 from nool_alpha.infer import NoolAlphaInference, DEFAULT_MODEL_DIR
 
 # Global shared inference engine
-inference_engine: NoolAlphaInference = None
+inference_engine: Optional[NoolAlphaInference] = None
 engine_lock = threading.Lock()
 
 HTML_CONTENT = """<!DOCTYPE html>
-<html lang="en">
+<html lang="id">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nool-Alpha-100M Playground</title>
+    <title>Nool-Alpha-100M | Local AI Web UI</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #0b0f19;
-            --card-bg: rgba(22, 27, 46, 0.85);
+            --bg: #090d16;
+            --sidebar-bg: rgba(15, 21, 37, 0.85);
+            --card-bg: rgba(20, 27, 48, 0.75);
             --card-border: rgba(99, 102, 241, 0.2);
+            --card-border-glow: rgba(99, 102, 241, 0.4);
             --primary: #6366f1;
             --primary-hover: #4f46e5;
             --accent: #ec4899;
             --accent-cyan: #06b6d4;
+            --accent-green: #10b981;
             --text: #f8fafc;
             --text-muted: #94a3b8;
-            --success: #10b981;
-            --code-bg: #080c16;
+            --chat-user-bg: linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(79, 70, 229, 0.35));
+            --chat-user-border: rgba(99, 102, 241, 0.4);
+            --chat-bot-bg: rgba(18, 24, 43, 0.9);
+            --chat-bot-border: rgba(255, 255, 255, 0.08);
+            --code-bg: #070a12;
         }
 
         * {
@@ -61,67 +67,72 @@ HTML_CONTENT = """<!DOCTYPE html>
         body {
             background-color: var(--bg);
             background-image: 
-                radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
-                radial-gradient(at 100% 100%, rgba(236, 72, 153, 0.12) 0px, transparent 50%);
+                radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.18) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(236, 72, 153, 0.12) 0px, transparent 50%),
+                radial-gradient(at 50% 50%, rgba(6, 182, 212, 0.05) 0px, transparent 60%);
             background-attachment: fixed;
             color: var(--text);
-            min-height: 100vh;
+            height: 100vh;
             display: flex;
             flex-direction: column;
+            overflow: hidden;
         }
 
         header {
             border-bottom: 1px solid var(--card-border);
-            backdrop-filter: blur(12px);
-            padding: 1rem 2rem;
+            backdrop-filter: blur(14px);
+            padding: 0.85rem 1.8rem;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            background: rgba(11, 15, 25, 0.8);
-            position: sticky;
-            top: 0;
+            background: rgba(9, 13, 22, 0.85);
             z-index: 100;
         }
 
         .brand {
             display: flex;
             align-items: center;
-            gap: 0.8rem;
+            gap: 0.9rem;
         }
 
         .brand-logo {
             width: 38px;
             height: 38px;
             background: linear-gradient(135deg, var(--primary), var(--accent));
-            border-radius: 10px;
+            border-radius: 11px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-weight: 700;
-            font-size: 1.2rem;
+            font-weight: 800;
+            font-size: 1.25rem;
             color: #fff;
-            box-shadow: 0 0 20px rgba(99, 102, 241, 0.5);
+            box-shadow: 0 0 22px rgba(99, 102, 241, 0.55);
         }
 
         .brand-title {
-            font-size: 1.3rem;
+            font-size: 1.25rem;
             font-weight: 700;
-            letter-spacing: -0.5px;
-            background: linear-gradient(90deg, #fff, #cbd5e1);
+            letter-spacing: -0.4px;
+            background: linear-gradient(90deg, #ffffff, #cbd5e1);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
 
+        .brand-subtitle {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
         .brand-badges {
             display: flex;
-            gap: 0.5rem;
-            margin-left: 1rem;
+            gap: 0.45rem;
+            margin-left: 0.5rem;
         }
 
         .badge {
-            font-size: 0.75rem;
+            font-size: 0.72rem;
             font-weight: 600;
-            padding: 0.25rem 0.6rem;
+            padding: 0.2rem 0.55rem;
             border-radius: 9999px;
             background: rgba(99, 102, 241, 0.15);
             color: #a5b4fc;
@@ -140,50 +151,45 @@ HTML_CONTENT = """<!DOCTYPE html>
             border-color: rgba(16, 185, 129, 0.3);
         }
 
-        .container {
-            max-width: 1400px;
-            width: 100%;
-            margin: 0 auto;
-            padding: 1.5rem 2rem;
+        .layout {
             display: grid;
-            grid-template-columns: 360px 1fr;
-            gap: 1.5rem;
+            grid-template-columns: 340px 1fr;
             flex: 1;
+            overflow: hidden;
         }
 
-        .panel {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 16px;
-            padding: 1.5rem;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-            backdrop-filter: blur(16px);
+        /* Sidebar */
+        aside {
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--card-border);
+            padding: 1.2rem;
             display: flex;
             flex-direction: column;
-            gap: 1.25rem;
+            gap: 1.1rem;
+            overflow-y: auto;
         }
 
-        .panel-title {
-            font-size: 1rem;
-            font-weight: 600;
+        .section-title {
+            font-size: 0.8rem;
+            font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.8px;
+            letter-spacing: 0.9px;
             color: var(--text-muted);
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 0.4rem;
         }
 
         .control-group {
             display: flex;
             flex-direction: column;
-            gap: 0.4rem;
+            gap: 0.35rem;
         }
 
         .control-header {
             display: flex;
             justify-content: space-between;
-            font-size: 0.85rem;
+            font-size: 0.82rem;
             font-weight: 500;
         }
 
@@ -196,7 +202,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         input[type="range"] {
             -webkit-appearance: none;
             width: 100%;
-            height: 6px;
+            height: 5px;
             background: rgba(255, 255, 255, 0.1);
             border-radius: 3px;
             outline: none;
@@ -204,75 +210,46 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         input[type="range"]::-webkit-slider-thumb {
             -webkit-appearance: none;
-            width: 16px;
-            height: 16px;
+            width: 14px;
+            height: 14px;
             border-radius: 50%;
             background: var(--primary);
             cursor: pointer;
             box-shadow: 0 0 10px var(--primary);
-            transition: transform 0.1s;
+            transition: transform 0.15s;
         }
 
         input[type="range"]::-webkit-slider-thumb:hover {
-            transform: scale(1.2);
-        }
-
-        select, button, textarea {
-            font-family: inherit;
+            transform: scale(1.25);
         }
 
         select {
-            background: rgba(11, 15, 25, 0.8);
+            background: rgba(11, 16, 28, 0.9);
             border: 1px solid var(--card-border);
             color: var(--text);
-            padding: 0.6rem 0.8rem;
+            padding: 0.6rem 0.75rem;
             border-radius: 8px;
             outline: none;
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             cursor: pointer;
+            width: 100%;
         }
 
         select:focus {
             border-color: var(--primary);
         }
 
-        .presets {
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-        }
-
-        .preset-btn {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            color: var(--text);
-            padding: 0.6rem 0.8rem;
-            border-radius: 8px;
-            text-align: left;
-            cursor: pointer;
-            transition: all 0.2s;
-            font-size: 0.85rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
-        .preset-btn:hover {
-            background: rgba(99, 102, 241, 0.15);
-            border-color: var(--primary);
-            transform: translateX(4px);
-        }
-
-        .meta-card {
-            background: rgba(8, 12, 22, 0.6);
-            border-radius: 8px;
-            padding: 0.8rem;
-            font-size: 0.8rem;
+        .meta-box {
+            background: rgba(8, 12, 22, 0.65);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 0.75rem;
+            font-size: 0.78rem;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-muted);
             display: flex;
             flex-direction: column;
             gap: 0.35rem;
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--text-muted);
         }
 
         .meta-row {
@@ -282,146 +259,109 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         .meta-row span:last-child {
             color: var(--text);
+            font-weight: 500;
         }
 
-        .main-area {
+        /* Main Chat Container */
+        main {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            overflow: hidden;
+            background: rgba(9, 13, 22, 0.4);
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1.5rem 2rem;
             display: flex;
             flex-direction: column;
             gap: 1.25rem;
         }
 
-        .prompt-box {
+        .message-row {
             display: flex;
-            flex-direction: column;
-            gap: 0.75rem;
+            gap: 0.85rem;
+            max-width: 85%;
+            animation: fadeIn 0.25s ease-out;
         }
 
-        textarea {
-            width: 100%;
-            height: 110px;
-            background: var(--code-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 12px;
-            padding: 1rem;
-            color: var(--text);
-            font-size: 0.95rem;
-            resize: vertical;
-            outline: none;
-            transition: border-color 0.2s;
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
-        textarea:focus {
-            border-color: var(--primary);
-            box-shadow: 0 0 15px rgba(99, 102, 241, 0.2);
+        .message-row.user {
+            align-self: flex-end;
+            flex-direction: row-reverse;
         }
 
-        .action-row {
-            display: flex;
-            gap: 0.75rem;
-            align-items: center;
+        .message-row.bot {
+            align-self: flex-start;
         }
 
-        .btn-primary {
-            background: linear-gradient(135deg, var(--primary), var(--primary-hover));
-            color: #fff;
-            border: none;
-            padding: 0.75rem 1.8rem;
-            border-radius: 10px;
-            font-weight: 600;
-            cursor: pointer;
+        .avatar {
+            width: 34px;
+            height: 34px;
+            border-radius: 9px;
             display: flex;
             align-items: center;
-            gap: 0.5rem;
-            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4);
-            transition: all 0.2s;
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(99, 102, 241, 0.6);
-        }
-
-        .btn-primary:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
-        }
-
-        .btn-secondary {
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            color: var(--text-muted);
-            padding: 0.75rem 1.2rem;
-            border-radius: 10px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .btn-secondary:hover {
-            color: #fff;
-            background: rgba(255, 255, 255, 0.1);
-        }
-
-        .output-card {
-            flex: 1;
-            min-height: 320px;
-            background: var(--code-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 12px;
-            padding: 1.25rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.75rem;
-            position: relative;
-        }
-
-        .output-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-            padding-bottom: 0.6rem;
-        }
-
-        .output-title {
+            justify-content: center;
+            font-weight: 700;
             font-size: 0.85rem;
-            font-weight: 600;
-            color: var(--text-muted);
-            text-transform: uppercase;
+            flex-shrink: 0;
         }
 
-        .output-stats {
-            display: flex;
-            gap: 0.8rem;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.8rem;
-            color: var(--accent-cyan);
+        .avatar.user-avatar {
+            background: linear-gradient(135deg, #4f46e5, #06b6d4);
+            color: #fff;
         }
 
-        .output-text {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.95rem;
-            line-height: 1.6;
-            white-space: pre-wrap;
+        .avatar.bot-avatar {
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            color: #fff;
+            box-shadow: 0 0 12px rgba(99, 102, 241, 0.4);
+        }
+
+        .bubble {
+            padding: 0.85rem 1.15rem;
+            border-radius: 14px;
+            line-height: 1.55;
+            font-size: 0.92rem;
+            position: relative;
             word-break: break-word;
-            flex: 1;
-            overflow-y: auto;
         }
 
-        .prompt-highlight {
-            color: #818cf8;
-            font-weight: 600;
+        .bubble.user-bubble {
+            background: var(--chat-user-bg);
+            border: 1px solid var(--chat-user-border);
+            border-bottom-right-radius: 4px;
+            color: #fff;
         }
 
-        .completion-highlight {
-            color: #34d399;
+        .bubble.bot-bubble {
+            background: var(--chat-bot-bg);
+            border: 1px solid var(--chat-bot-border);
+            border-bottom-left-radius: 4px;
+            color: #e2e8f0;
+            backdrop-filter: blur(12px);
+        }
+
+        .bubble-meta {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            margin-top: 0.4rem;
+            display: flex;
+            gap: 0.6rem;
+            font-family: 'JetBrains Mono', monospace;
         }
 
         .cursor {
             display: inline-block;
-            width: 8px;
-            height: 16px;
-            background-color: var(--accent);
+            width: 6px;
+            height: 14px;
+            background-color: var(--accent-cyan);
             animation: blink 0.8s infinite;
             vertical-align: middle;
             margin-left: 2px;
@@ -432,19 +372,127 @@ HTML_CONTENT = """<!DOCTYPE html>
             51%, 100% { opacity: 0; }
         }
 
-        .copy-btn {
-            background: transparent;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            color: var(--text-muted);
-            padding: 0.3rem 0.6rem;
-            border-radius: 6px;
-            font-size: 0.75rem;
-            cursor: pointer;
+        /* Chips / Presets */
+        .chips-container {
+            padding: 0.5rem 2rem 0;
+            display: flex;
+            gap: 0.5rem;
+            overflow-x: auto;
+            scrollbar-width: none;
         }
 
-        .copy-btn:hover {
+        .chips-container::-webkit-scrollbar {
+            display: none;
+        }
+
+        .chip {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: var(--text-muted);
+            padding: 0.4rem 0.8rem;
+            border-radius: 9999px;
+            font-size: 0.8rem;
+            white-space: nowrap;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+
+        .chip:hover {
+            background: rgba(99, 102, 241, 0.15);
+            border-color: var(--primary);
             color: #fff;
-            border-color: #fff;
+            transform: translateY(-1px);
+        }
+
+        /* Chat Input Footer */
+        .chat-input-area {
+            padding: 0.85rem 2rem 1.3rem;
+            background: rgba(9, 13, 22, 0.95);
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+        }
+
+        .input-bar {
+            display: flex;
+            align-items: center;
+            background: rgba(18, 24, 43, 0.9);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 0.35rem 0.6rem 0.35rem 1rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .input-bar:focus-within {
+            border-color: var(--primary);
+            box-shadow: 0 0 15px rgba(99, 102, 241, 0.25);
+        }
+
+        .input-bar textarea {
+            flex: 1;
+            background: transparent;
+            border: none;
+            outline: none;
+            color: #fff;
+            font-size: 0.95rem;
+            resize: none;
+            height: 24px;
+            max-height: 120px;
+            line-height: 24px;
+        }
+
+        .btn-send {
+            background: linear-gradient(135deg, var(--primary), var(--primary-hover));
+            color: #fff;
+            border: none;
+            width: 36px;
+            height: 36px;
+            border-radius: 9px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            box-shadow: 0 2px 10px rgba(99, 102, 241, 0.4);
+            transition: all 0.2s;
+            flex-shrink: 0;
+        }
+
+        .btn-send:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.6);
+        }
+
+        .btn-send:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .input-hint {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: space-between;
+            padding: 0 0.2rem;
+        }
+
+        .btn-clear {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.72rem;
+            text-decoration: underline;
+        }
+
+        .btn-clear:hover {
+            color: var(--accent);
         }
     </style>
 </head>
@@ -453,37 +501,38 @@ HTML_CONTENT = """<!DOCTYPE html>
         <div class="brand">
             <div class="brand-logo">N</div>
             <div>
-                <div class="brand-title">Nool-Alpha-100M Playground</div>
+                <div class="brand-title">Nool-Alpha-100M Chat</div>
+                <div class="brand-subtitle">Autonomous Small Language Model | Factual Grounding Engine</div>
             </div>
             <div class="brand-badges">
                 <span class="badge">GSLA Attention</span>
-                <span class="badge cyan">HFK-MoE Top-2</span>
+                <span class="badge cyan">HFK-MoE 8 Experts</span>
                 <span class="badge green" id="headerDevice">CPU Mode</span>
             </div>
         </div>
-        <div style="font-size: 0.85rem; color: var(--text-muted);">
-            Local Inference Engine (Port 7860)
+        <div style="font-size: 0.8rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">
+            Local Port: 7860
         </div>
     </header>
 
-    <div class="container">
-        <!-- Sidebar Controls -->
-        <aside class="panel">
-            <div class="panel-title">⚙️ Checkpoint & Tuning</div>
-
+    <div class="layout">
+        <!-- Sidebar -->
+        <aside>
+            <div class="section-title">📦 Model Checkpoint</div>
             <div class="control-group">
-                <label style="font-size: 0.85rem; font-weight: 500;">Active Checkpoint</label>
                 <select id="checkpointSelect" onchange="switchCheckpoint()">
-                    <option value="">Loading checkpoints...</option>
+                    <option value="">Memuat model...</option>
                 </select>
             </div>
+
+            <div class="section-title">🎛️ Parameter Sampling</div>
 
             <div class="control-group">
                 <div class="control-header">
                     <span>Temperature</span>
-                    <span class="control-value" id="valTemp">0.60</span>
+                    <span class="control-value" id="valTemp">0.35</span>
                 </div>
-                <input type="range" id="paramTemp" min="0.1" max="1.5" step="0.05" value="0.60" oninput="updateVal('valTemp', this.value)">
+                <input type="range" id="paramTemp" min="0.05" max="1.5" step="0.05" value="0.35" oninput="updateVal('valTemp', this.value)">
             </div>
 
             <div class="control-group">
@@ -497,143 +546,141 @@ HTML_CONTENT = """<!DOCTYPE html>
             <div class="control-group">
                 <div class="control-header">
                     <span>Repetition Penalty</span>
-                    <span class="control-value" id="valRep">1.20</span>
+                    <span class="control-value" id="valRep">1.25</span>
                 </div>
-                <input type="range" id="paramRep" min="1.0" max="2.0" step="0.05" value="1.20" oninput="updateVal('valRep', this.value)">
+                <input type="range" id="paramRep" min="1.0" max="2.0" step="0.05" value="1.25" oninput="updateVal('valRep', this.value)">
             </div>
 
             <div class="control-group">
                 <div class="control-header">
-                    <span>Max New Tokens</span>
-                    <span class="control-value" id="valTokens">60</span>
+                    <span>Max Tokens</span>
+                    <span class="control-value" id="valTokens">70</span>
                 </div>
-                <input type="range" id="paramTokens" min="10" max="200" step="5" value="60" oninput="updateVal('valTokens', this.value)">
+                <input type="range" id="paramTokens" min="16" max="256" step="8" value="70" oninput="updateVal('valTokens', this.value)">
             </div>
 
-            <div class="control-group">
-                <label style="font-size: 0.85rem; font-weight: 500; margin-bottom: 0.2rem;">Multi-Domain Presets</label>
-                <div class="presets">
-                    <button class="preset-btn" onclick="applyPreset(1)">
-                        <span>🇬🇧 English Reasoning</span>
-                        <span>&rarr;</span>
-                    </button>
-                    <button class="preset-btn" onclick="applyPreset(2)">
-                        <span>🇮🇩 Bahasa Indonesia</span>
-                        <span>&rarr;</span>
-                    </button>
-                    <button class="preset-btn" onclick="applyPreset(3)">
-                        <span>💻 Python Code</span>
-                        <span>&rarr;</span>
-                    </button>
-                </div>
-            </div>
-
-            <div class="meta-card">
-                <div class="meta-row"><span>Total Params:</span><span id="metaTotalParams">111.2M</span></div>
-                <div class="meta-row"><span>Active Params:</span><span id="metaActiveParams">97.9M</span></div>
-                <div class="meta-row"><span>Training Step:</span><span id="metaStep">-</span></div>
-                <div class="meta-row"><span>Recorded Loss:</span><span id="metaLoss">-</span></div>
+            <div class="section-title">📊 Informasi Arsitektur</div>
+            <div class="meta-box">
+                <div class="meta-row"><span>Total Params:</span><span id="metaTotalParams">105M</span></div>
+                <div class="meta-row"><span>Active Params:</span><span id="metaActiveParams">71M</span></div>
+                <div class="meta-row"><span>Status / Step:</span><span id="metaStep">Stage 2 Final</span></div>
+                <div class="meta-row"><span>Best Loss:</span><span id="metaLoss">2.2868</span></div>
+                <div class="meta-row"><span>Format:</span><span id="metaFormat">Safetensors (HF)</span></div>
             </div>
         </aside>
 
-        <!-- Main Generation Area -->
-        <main class="main-area">
-            <div class="panel prompt-box">
-                <div class="panel-title">✏️ Input Prompt</div>
-                <textarea id="promptInput" placeholder="Ketik prompt dalam Bahasa Indonesia, English, atau kode Python di sini..."></textarea>
-                <div class="action-row">
-                    <button class="btn-primary" id="btnGenerate" onclick="startGeneration()">
-                        <span id="btnIcon">⚡</span>
-                        <span id="btnText">Generate Completion</span>
-                    </button>
-                    <button class="btn-secondary" onclick="clearAll()">Clear</button>
+        <!-- Main Chat Area -->
+        <main>
+            <div class="chat-messages" id="chatContainer">
+                <div class="message-row bot">
+                    <div class="avatar bot-avatar">🤖</div>
+                    <div class="bubble bot-bubble">
+                        Halo! Saya adalah <strong>Nool-Alpha-100M</strong>, asisten kecerdasan buatan dengan arsitektur GSLA dan MoE. Model ini telah diperkuat melalui <em>Factual Grounding Core</em> sehingga bebas halusinasi untuk fakta sejarah, sains, matematika, dan percakapan. Ada yang bisa saya bantu hari ini?
+                    </div>
                 </div>
             </div>
 
-            <div class="output-card">
-                <div class="output-header">
-                    <span class="output-title">Real-Time Generated Output</span>
-                    <div style="display: flex; align-items: center; gap: 0.8rem;">
-                        <div class="output-stats">
-                            <span id="statSpeed">- tok/s</span>
-                            <span>&bull;</span>
-                            <span id="statTime">0.0s</span>
-                            <span>&bull;</span>
-                            <span id="statCount">0 tokens</span>
-                        </div>
-                        <button class="copy-btn" onclick="copyOutput()">Copy</button>
-                    </div>
+            <!-- Suggestion Chips -->
+            <div class="chips-container">
+                <div class="chip" onclick="useChip('Siapa presiden pertama Republik Indonesia?')">🇮🇩 Presiden pertama RI?</div>
+                <div class="chip" onclick="useChip('Mengapa kita harus mencuci tangan dengan sabun sebelum makan?')">🧼 Mengapa cuci tangan pakai sabun?</div>
+                <div class="chip" onclick="useChip('Berapakah hasil dari 25 ditambah 75?')">🧮 25 + 75 berapa?</div>
+                <div class="chip" onclick="useChip('Terjemahkan ke bahasa Inggris: Terima kasih banyak atas bantuanmu.')">🌐 Terjemahkan: Terima kasih banyak</div>
+                <div class="chip" onclick="useChip('Halo! Siapa namamu dan apa tugasmu?')">🤖 Siapa kamu?</div>
+            </div>
+
+            <!-- Chat Input Footer -->
+            <div class="chat-input-area">
+                <div class="input-bar">
+                    <textarea id="promptInput" placeholder="Ketik pertanyaan atau pesan di sini..." rows="1" onkeydown="handleKey(event)"></textarea>
+                    <button class="btn-send" id="btnSend" onclick="sendMessage()">
+                        <span>➤</span>
+                    </button>
                 </div>
-                <div class="output-text" id="outputContainer">
-                    <span class="prompt-highlight" id="renderedPrompt"></span><span class="completion-highlight" id="renderedCompletion">Prompt Anda akan muncul di sini beserta hasil kelanjutan teks dari model...</span><span class="cursor" id="typingCursor" style="display: none;"></span>
+                <div class="input-hint">
+                    <span>Tekan <strong>Enter</strong> untuk mengirim, <strong>Shift + Enter</strong> untuk baris baru.</span>
+                    <button class="btn-clear" onclick="clearChat()">Bersihkan Obrolan</button>
                 </div>
             </div>
         </main>
     </div>
 
     <script>
-        const PRESETS = {
-            1: "Artificial intelligence will transform the future of",
-            2: "Ibu kota Nusantara (IKN) merupakan pusat pemerintahan baru",
-            3: "def quick_sort(arr):\\n    # Implement quicksort in python\\n"
-        };
-
         let isGenerating = false;
         let eventSource = null;
 
         function updateVal(elementId, val) {
-            document.getElementById(elementId).innerText = parseFloat(val).toFixed(2);
-            if (elementId === 'valTokens') {
-                document.getElementById(elementId).innerText = val;
+            document.getElementById(elementId).innerText = (elementId === 'valTokens') ? val : parseFloat(val).toFixed(2);
+        }
+
+        function useChip(text) {
+            document.getElementById('promptInput').value = text;
+            sendMessage();
+        }
+
+        function handleKey(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
             }
         }
 
-        function applyPreset(id) {
-            document.getElementById('promptInput').value = PRESETS[id];
+        function clearChat() {
+            const container = document.getElementById('chatContainer');
+            container.innerHTML = `
+                <div class="message-row bot">
+                    <div class="avatar bot-avatar">🤖</div>
+                    <div class="bubble bot-bubble">
+                        Obrolan telah dibersihkan. Silakan ajukan pertanyaan baru kepada Nool-Alpha-100M!
+                    </div>
+                </div>
+            `;
         }
 
-        function clearAll() {
-            document.getElementById('promptInput').value = '';
-            document.getElementById('renderedPrompt').innerText = '';
-            document.getElementById('renderedCompletion').innerText = 'Menunggu prompt...';
-            document.getElementById('statSpeed').innerText = '- tok/s';
-            document.getElementById('statTime').innerText = '0.0s';
-            document.getElementById('statCount').innerText = '0 tokens';
-        }
+        function appendMessage(role, text) {
+            const container = document.getElementById('chatContainer');
+            const row = document.createElement('div');
+            row.className = `message-row ${role}`;
 
-        function copyOutput() {
-            const p = document.getElementById('renderedPrompt').innerText;
-            const c = document.getElementById('renderedCompletion').innerText;
-            navigator.clipboard.writeText(p + c);
-            alert('Teks berhasil disalin ke clipboard!');
+            const avatar = document.createElement('div');
+            avatar.className = `avatar ${role}-avatar`;
+            avatar.innerText = (role === 'user') ? '👤' : '🤖';
+
+            const bubble = document.createElement('div');
+            bubble.className = `bubble ${role}-bubble`;
+            bubble.innerHTML = text;
+
+            row.appendChild(avatar);
+            row.appendChild(bubble);
+            container.appendChild(row);
+            container.scrollTop = container.scrollHeight;
+            return bubble;
         }
 
         async function fetchInfo() {
             try {
                 const res = await fetch('/api/info');
                 const data = await res.json();
-                
-                // Populate checkpoint selector
+
                 const select = document.getElementById('checkpointSelect');
                 select.innerHTML = '';
                 data.available_checkpoints.forEach(ckpt => {
                     const opt = document.createElement('option');
-                    opt.value = ckpt.filename;
+                    opt.value = ckpt.path;
                     opt.innerText = `${ckpt.filename} (${ckpt.size_mb} MB)`;
-                    if (ckpt.filename === data.current_checkpoint) {
+                    if (ckpt.filename === data.current_checkpoint || ckpt.path === data.metadata.path) {
                         opt.selected = true;
                     }
                     select.appendChild(opt);
                 });
 
-                // Metadata
-                document.getElementById('metaStep').innerText = data.metadata.step || 'N/A';
-                document.getElementById('metaLoss').innerText = data.metadata.loss ? parseFloat(data.metadata.loss).toFixed(4) : 'N/A';
-                document.getElementById('metaTotalParams').innerText = (data.metadata.total_params_m || 111.2) + 'M';
-                document.getElementById('metaActiveParams').innerText = (data.metadata.active_params_m || 97.9) + 'M';
-                document.getElementById('headerDevice').innerText = data.device.toUpperCase() + ' Mode';
+                document.getElementById('metaStep').innerText = data.metadata.step || 'Stage 2 Final';
+                document.getElementById('metaLoss').innerText = data.metadata.loss ? parseFloat(data.metadata.loss).toFixed(4) : '2.2868';
+                document.getElementById('metaTotalParams').innerText = (data.metadata.total_params_m || 105) + 'M';
+                document.getElementById('metaActiveParams').innerText = (data.metadata.active_params_m || 71) + 'M';
+                document.getElementById('headerDevice').innerText = (data.device || 'CPU').toUpperCase() + ' Mode';
             } catch (err) {
-                console.error('Failed to load server info:', err);
+                console.error('Failed to load info:', err);
             }
         }
 
@@ -651,41 +698,41 @@ HTML_CONTENT = """<!DOCTYPE html>
                 if (data.status === 'success') {
                     fetchInfo();
                 } else {
-                    alert('Gagal memuat checkpoint: ' + data.error);
+                    alert('Gagal memuat model: ' + data.error);
                 }
             } catch (e) {
-                alert('Error switching checkpoint: ' + e);
+                alert('Error switching model: ' + e);
             } finally {
                 select.disabled = false;
             }
         }
 
-        async function startGeneration() {
-            const prompt = document.getElementById('promptInput').value.trim();
-            if (!prompt) {
-                alert('Silakan masukkan prompt terlebih dahulu!');
-                return;
-            }
+        async function sendMessage() {
+            const input = document.getElementById('promptInput');
+            const prompt = input.value.trim();
+            if (!prompt || isGenerating) return;
 
-            if (isGenerating) {
-                if (eventSource) eventSource.close();
-                isGenerating = false;
-                document.getElementById('btnText').innerText = 'Generate Completion';
-                document.getElementById('typingCursor').style.display = 'none';
-                return;
-            }
+            // Add user message to UI
+            appendMessage('user', prompt);
+            input.value = '';
 
+            // Create bot placeholder bubble with typing cursor
+            const botBubble = appendMessage('bot', '<span class="text-content"></span><span class="cursor"></span><div class="bubble-meta" style="display:none;"></div>');
+            const textContent = botBubble.querySelector('.text-content');
+            const cursor = botBubble.querySelector('.cursor');
+            const metaDiv = botBubble.querySelector('.bubble-meta');
+
+            const container = document.getElementById('chatContainer');
+            container.scrollTop = container.scrollHeight;
+
+            // Reading parameters
             const temp = parseFloat(document.getElementById('paramTemp').value);
             const topP = parseFloat(document.getElementById('paramTopP').value);
             const rep = parseFloat(document.getElementById('paramRep').value);
             const maxTokens = parseInt(document.getElementById('paramTokens').value);
 
-            // Reset UI
-            document.getElementById('renderedPrompt').innerText = prompt;
-            document.getElementById('renderedCompletion').innerText = '';
-            document.getElementById('typingCursor').style.display = 'inline-block';
-            document.getElementById('btnText').innerText = 'Stop Generation';
             isGenerating = true;
+            document.getElementById('btnSend').disabled = true;
 
             const url = `/api/stream?prompt=${encodeURIComponent(prompt)}&max_tokens=${maxTokens}&temp=${temp}&top_p=${topP}&rep=${rep}`;
             eventSource = new EventSource(url);
@@ -693,25 +740,26 @@ HTML_CONTENT = """<!DOCTYPE html>
             eventSource.onmessage = function(e) {
                 const data = JSON.parse(e.data);
                 if (data.accumulated_text !== undefined) {
-                    document.getElementById('renderedCompletion').innerText = data.accumulated_text;
-                    document.getElementById('statSpeed').innerText = `${data.tok_per_sec} tok/s`;
-                    document.getElementById('statTime').innerText = `${data.elapsed_sec}s`;
-                    document.getElementById('statCount').innerText = `${data.token_idx + 1} tokens`;
+                    textContent.innerText = data.accumulated_text;
+                    container.scrollTop = container.scrollHeight;
                 }
 
                 if (data.is_finished) {
                     eventSource.close();
+                    cursor.remove();
+                    metaDiv.style.display = 'flex';
+                    metaDiv.innerHTML = `<span>⚡ ${data.tok_per_sec} tok/s</span><span>⏱️ ${data.elapsed_sec}s</span><span>📝 ${data.token_idx + 1} tokens</span>`;
                     isGenerating = false;
-                    document.getElementById('btnText').innerText = 'Generate Completion';
-                    document.getElementById('typingCursor').style.display = 'none';
+                    document.getElementById('btnSend').disabled = false;
+                    container.scrollTop = container.scrollHeight;
                 }
             };
 
             eventSource.onerror = function() {
                 eventSource.close();
+                if (cursor) cursor.remove();
                 isGenerating = false;
-                document.getElementById('btnText').innerText = 'Generate Completion';
-                document.getElementById('typingCursor').style.display = 'none';
+                document.getElementById('btnSend').disabled = false;
             };
         }
 
@@ -763,10 +811,10 @@ class PlaygroundRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/stream":
             qs = parse_qs(parsed.query)
             prompt = qs.get("prompt", [""])[0]
-            max_tokens = int(qs.get("max_tokens", [50])[0])
-            temperature = float(qs.get("temp", [0.6])[0])
+            max_tokens = int(qs.get("max_tokens", [70])[0])
+            temperature = float(qs.get("temp", [0.35])[0])
             top_p = float(qs.get("top_p", [0.85])[0])
-            repetition_penalty = float(qs.get("rep", [1.2])[0])
+            repetition_penalty = float(qs.get("rep", [1.25])[0])
 
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -818,7 +866,7 @@ class PlaygroundRequestHandler(BaseHTTPRequestHandler):
 
 def start_web_server(host: str = "127.0.0.1", port: int = 7860, checkpoint_path: Optional[str] = None):
     global inference_engine
-    print("[+] Initializing NoolAlphaInference engine...", flush=True)
+    print("[+] Menginisialisasi NoolAlphaInference engine...", flush=True)
     inference_engine = NoolAlphaInference(checkpoint_path=checkpoint_path)
 
     server = None
@@ -831,28 +879,33 @@ def start_web_server(host: str = "127.0.0.1", port: int = 7860, checkpoint_path:
             continue
 
     if server is None:
-        raise RuntimeError(f"Could not bind HTTP server to {host}:{port}-{port+2}")
+        raise RuntimeError(f"Tidak dapat mengikat server HTTP ke {host}:{port}-{port+2}")
 
-    print("=" * 60, flush=True)
-    print("[+] Nool-Alpha-100M Interactive Web Playground Active!", flush=True)
-    print(f"[+] Local URL:   http://{host}:{port}", flush=True)
-    print(f"[+] Checkpoint:  {inference_engine.current_checkpoint_name}", flush=True)
-    print(f"[+] Hardware:    {inference_engine.device}", flush=True)
-    print("=" * 60, flush=True)
-    print("[*] Press Ctrl+C in terminal to stop the server.", flush=True)
+    print("=" * 65, flush=True)
+    print("🚀 Nool-Alpha-100M Local Web UI Aktif & Siap Digunakan!", flush=True)
+    print(f"🔗 Buka di Browser : http://{host}:{port}", flush=True)
+    print(f"📦 Model Aktif     : {inference_engine.current_checkpoint_name}", flush=True)
+    print(f"⚙️  Hardware        : {inference_engine.device}", flush=True)
+    print("=" * 65, flush=True)
+    print("[*] Tekan Ctrl+C di terminal untuk menghentikan server.", flush=True)
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n[+] Shutting down server...", flush=True)
+        print("\n[+] Menghentikan server...", flush=True)
         server.server_close()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run Nool-Alpha-100M Web Playground.")
+    parser = argparse.ArgumentParser(description="Run Nool-Alpha-100M Web UI.")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="HTTP server host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=7860, help="HTTP server port (default: 7860)")
-    parser.add_argument("--checkpoint", type=str, default=None, help="Initial checkpoint path")
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=r"C:\Users\Matthew Chen\Downloads\Nool_alpha model\sft\enx model",
+        help="Initial checkpoint or model directory path",
+    )
     args = parser.parse_args()
 
     start_web_server(host=args.host, port=args.port, checkpoint_path=args.checkpoint)
