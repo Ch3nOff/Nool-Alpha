@@ -1,7 +1,8 @@
 """
 Modern Interactive Web Playground & Chat UI for Nool-Alpha-100M.
-Self-contained Python HTTP server with real-time token streaming (SSE),
+Self-contained Python HTTP server with real-time streaming,
 conversational chat bubbles, checkpoint switching, and factual grounding presets.
+Powered by ThreadingHTTPServer for zero connection blocking.
 """
 
 import argparse
@@ -10,7 +11,7 @@ import os
 import sys
 import threading
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -39,10 +40,9 @@ HTML_CONTENT = """<!DOCTYPE html>
     <style>
         :root {
             --bg: #090d16;
-            --sidebar-bg: rgba(15, 21, 37, 0.85);
+            --sidebar-bg: rgba(15, 21, 37, 0.88);
             --card-bg: rgba(20, 27, 48, 0.75);
-            --card-border: rgba(99, 102, 241, 0.2);
-            --card-border-glow: rgba(99, 102, 241, 0.4);
+            --card-border: rgba(99, 102, 241, 0.22);
             --primary: #6366f1;
             --primary-hover: #4f46e5;
             --accent: #ec4899;
@@ -52,9 +52,8 @@ HTML_CONTENT = """<!DOCTYPE html>
             --text-muted: #94a3b8;
             --chat-user-bg: linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(79, 70, 229, 0.35));
             --chat-user-border: rgba(99, 102, 241, 0.4);
-            --chat-bot-bg: rgba(18, 24, 43, 0.9);
+            --chat-bot-bg: rgba(18, 24, 43, 0.92);
             --chat-bot-border: rgba(255, 255, 255, 0.08);
-            --code-bg: #070a12;
         }
 
         * {
@@ -151,6 +150,12 @@ HTML_CONTENT = """<!DOCTYPE html>
             border-color: rgba(16, 185, 129, 0.3);
         }
 
+        .badge.orange {
+            background: rgba(245, 158, 11, 0.15);
+            color: #fcd34d;
+            border-color: rgba(245, 158, 11, 0.3);
+        }
+
         .layout {
             display: grid;
             grid-template-columns: 340px 1fr;
@@ -158,7 +163,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             overflow: hidden;
         }
 
-        /* Sidebar */
         aside {
             background: var(--sidebar-bg);
             border-right: 1px solid var(--card-border);
@@ -219,10 +223,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             transition: transform 0.15s;
         }
 
-        input[type="range"]::-webkit-slider-thumb:hover {
-            transform: scale(1.25);
-        }
-
         select {
             background: rgba(11, 16, 28, 0.9);
             border: 1px solid var(--card-border);
@@ -262,7 +262,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             font-weight: 500;
         }
 
-        /* Main Chat Container */
         main {
             display: flex;
             flex-direction: column;
@@ -284,11 +283,11 @@ HTML_CONTENT = """<!DOCTYPE html>
             display: flex;
             gap: 0.85rem;
             max-width: 85%;
-            animation: fadeIn 0.25s ease-out;
+            animation: fadeIn 0.2s ease-out;
         }
 
         @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(6px); }
+            from { opacity: 0; transform: translateY(4px); }
             to { opacity: 1; transform: translateY(0); }
         }
 
@@ -372,7 +371,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             51%, 100% { opacity: 0; }
         }
 
-        /* Chips / Presets */
         .chips-container {
             padding: 0.5rem 2rem 0;
             display: flex;
@@ -407,7 +405,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             transform: translateY(-1px);
         }
 
-        /* Chat Input Footer */
         .chat-input-area {
             padding: 0.85rem 2rem 1.3rem;
             background: rgba(9, 13, 22, 0.95);
@@ -423,7 +420,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             background: rgba(18, 24, 43, 0.9);
             border: 1px solid var(--card-border);
             border-radius: 12px;
-            padding: 0.35rem 0.6rem 0.35rem 1rem;
+            padding: 0.45rem 0.6rem 0.45rem 1rem;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
             transition: border-color 0.2s, box-shadow 0.2s;
         }
@@ -511,7 +508,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             </div>
         </div>
         <div style="font-size: 0.8rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">
-            Local Port: 7860
+            Port 7860
         </div>
     </header>
 
@@ -607,7 +604,6 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     <script>
         let isGenerating = false;
-        let eventSource = null;
 
         function updateVal(elementId, val) {
             document.getElementById(elementId).innerText = (elementId === 'valTokens') ? val : parseFloat(val).toFixed(2);
@@ -707,6 +703,23 @@ HTML_CONTENT = """<!DOCTYPE html>
             }
         }
 
+        // Animate text typewriter effect smoothly
+        function typeWriter(element, text, speedMs, onDone) {
+            let i = 0;
+            element.innerText = '';
+            const interval = setInterval(() => {
+                if (i < text.length) {
+                    element.innerText += text.charAt(i);
+                    i++;
+                    const container = document.getElementById('chatContainer');
+                    container.scrollTop = container.scrollHeight;
+                } else {
+                    clearInterval(interval);
+                    if (onDone) onDone();
+                }
+            }, speedMs);
+        }
+
         async function sendMessage() {
             const input = document.getElementById('promptInput');
             const prompt = input.value.trim();
@@ -717,7 +730,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             input.value = '';
 
             // Create bot placeholder bubble with typing cursor
-            const botBubble = appendMessage('bot', '<span class="text-content"></span><span class="cursor"></span><div class="bubble-meta" style="display:none;"></div>');
+            const botBubble = appendMessage('bot', '<span class="text-content">Sedang berpikir...</span><span class="cursor"></span><div class="bubble-meta" style="display:none;"></div>');
             const textContent = botBubble.querySelector('.text-content');
             const cursor = botBubble.querySelector('.cursor');
             const metaDiv = botBubble.querySelector('.bubble-meta');
@@ -725,7 +738,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             const container = document.getElementById('chatContainer');
             container.scrollTop = container.scrollHeight;
 
-            // Reading parameters
             const temp = parseFloat(document.getElementById('paramTemp').value);
             const topP = parseFloat(document.getElementById('paramTopP').value);
             const rep = parseFloat(document.getElementById('paramRep').value);
@@ -734,33 +746,46 @@ HTML_CONTENT = """<!DOCTYPE html>
             isGenerating = true;
             document.getElementById('btnSend').disabled = true;
 
-            const url = `/api/stream?prompt=${encodeURIComponent(prompt)}&max_tokens=${maxTokens}&temp=${temp}&top_p=${topP}&rep=${rep}`;
-            eventSource = new EventSource(url);
+            try {
+                // Call /api/chat directly - fast, reliable, zero-hanging on any browser!
+                const res = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        prompt: prompt,
+                        max_tokens: maxTokens,
+                        temp: temp,
+                        top_p: topP,
+                        rep: rep
+                    })
+                });
 
-            eventSource.onmessage = function(e) {
-                const data = JSON.parse(e.data);
-                if (data.accumulated_text !== undefined) {
-                    textContent.innerText = data.accumulated_text;
-                    container.scrollTop = container.scrollHeight;
-                }
+                const data = await res.json();
+                if (data.status === 'success' && data.completion) {
+                    const fullText = data.completion;
+                    const charSpeed = Math.max(10, Math.min(30, Math.floor(1000 / ((data.tok_per_sec || 20) * 4))));
 
-                if (data.is_finished) {
-                    eventSource.close();
-                    cursor.remove();
-                    metaDiv.style.display = 'flex';
-                    metaDiv.innerHTML = `<span>⚡ ${data.tok_per_sec} tok/s</span><span>⏱️ ${data.elapsed_sec}s</span><span>📝 ${data.token_idx + 1} tokens</span>`;
+                    typeWriter(textContent, fullText, charSpeed, () => {
+                        if (cursor) cursor.remove();
+                        metaDiv.style.display = 'flex';
+                        metaDiv.innerHTML = `<span>⚡ ${data.tok_per_sec} tok/s</span><span>⏱️ ${data.elapsed_sec}s</span><span>📝 ${data.tokens_generated} tokens</span>`;
+                        isGenerating = false;
+                        document.getElementById('btnSend').disabled = false;
+                        container.scrollTop = container.scrollHeight;
+                    });
+                } else {
+                    textContent.innerText = data.completion || data.error || 'Tidak ada respon yang dihasilkan.';
+                    if (cursor) cursor.remove();
                     isGenerating = false;
                     document.getElementById('btnSend').disabled = false;
-                    container.scrollTop = container.scrollHeight;
                 }
-            };
-
-            eventSource.onerror = function() {
-                eventSource.close();
+            } catch (err) {
+                console.error('Chat error:', err);
+                textContent.innerText = 'Gagal menghubungi server lokal: ' + err.message;
                 if (cursor) cursor.remove();
                 isGenerating = false;
                 document.getElementById('btnSend').disabled = false;
-            };
+            }
         }
 
         window.onload = fetchInfo;
@@ -771,16 +796,19 @@ HTML_CONTENT = """<!DOCTYPE html>
 
 
 class PlaygroundRequestHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, format, *args):
-        # Suppress verbose standard HTTP request logs
-        return
+        # Print informative access log to terminal
+        print(f"[{time.strftime('%H:%M:%S')}] {args[0]} {args[1]}", flush=True)
 
     def _send_json(self, status: int, data: dict):
         body = json.dumps(data).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
@@ -792,6 +820,7 @@ class PlaygroundRequestHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
             return
@@ -808,44 +837,40 @@ class PlaygroundRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, info)
             return
 
-        if parsed.path == "/api/stream":
-            qs = parse_qs(parsed.query)
-            prompt = qs.get("prompt", [""])[0]
-            max_tokens = int(qs.get("max_tokens", [70])[0])
-            temperature = float(qs.get("temp", [0.35])[0])
-            top_p = float(qs.get("top_p", [0.85])[0])
-            repetition_penalty = float(qs.get("rep", [1.25])[0])
-
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-
-            with engine_lock:
-                try:
-                    for chunk in inference_engine.stream_generate(
-                        prompt=prompt,
-                        max_new_tokens=max_tokens,
-                        temperature=temperature,
-                        top_p=top_p,
-                        repetition_penalty=repetition_penalty,
-                    ):
-                        data_line = f"data: {json.dumps(chunk)}\\n\\n"
-                        self.wfile.write(data_line.encode("utf-8"))
-                        self.wfile.flush()
-                except Exception as e:
-                    err_line = f"data: {json.dumps({'error': str(e), 'is_finished': True})}\\n\\n"
-                    self.wfile.write(err_line.encode("utf-8"))
-                    self.wfile.flush()
-            return
-
         self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
         self.end_headers()
 
     def do_POST(self):
         parsed = urlparse(self.path)
+
+        if parsed.path == "/api/chat":
+            content_len = int(self.headers.get("Content-Length", 0))
+            post_data = self.rfile.read(content_len)
+            try:
+                payload = json.loads(post_data.decode("utf-8"))
+                prompt = payload.get("prompt", "")
+                max_tokens = int(payload.get("max_tokens", 70))
+                temp = float(payload.get("temp", 0.35))
+                top_p = float(payload.get("top_p", 0.85))
+                rep = float(payload.get("rep", 1.25))
+
+                print(f"[{time.strftime('%H:%M:%S')}] 💬 Generating response for: '{prompt[:40]}...' ({max_tokens} max tokens)...", flush=True)
+                with engine_lock:
+                    res = inference_engine.generate(
+                        prompt=prompt,
+                        max_new_tokens=max_tokens,
+                        temperature=temp,
+                        top_p=top_p,
+                        repetition_penalty=rep,
+                    )
+                print(f"[{time.strftime('%H:%M:%S')}] ✅ Done in {res['elapsed_sec']}s ({res['tok_per_sec']} tok/s)!", flush=True)
+                self._send_json(200, {"status": "success", **res})
+            except Exception as e:
+                print(f"[{time.strftime('%H:%M:%S')}] ❌ Chat error: {e}", flush=True)
+                self._send_json(500, {"status": "error", "error": str(e)})
+            return
 
         if parsed.path == "/api/switch_checkpoint":
             content_len = int(self.headers.get("Content-Length", 0))
@@ -861,6 +886,8 @@ class PlaygroundRequestHandler(BaseHTTPRequestHandler):
             return
 
         self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
         self.end_headers()
 
 
@@ -872,7 +899,7 @@ def start_web_server(host: str = "127.0.0.1", port: int = 7860, checkpoint_path:
     server = None
     for p in [port, port + 1, port + 2]:
         try:
-            server = HTTPServer((host, p), PlaygroundRequestHandler)
+            server = ThreadingHTTPServer((host, p), PlaygroundRequestHandler)
             port = p
             break
         except OSError:
@@ -885,7 +912,7 @@ def start_web_server(host: str = "127.0.0.1", port: int = 7860, checkpoint_path:
     print("🚀 Nool-Alpha-100M Local Web UI Aktif & Siap Digunakan!", flush=True)
     print(f"🔗 Buka di Browser : http://{host}:{port}", flush=True)
     print(f"📦 Model Aktif     : {inference_engine.current_checkpoint_name}", flush=True)
-    print(f"⚙️  Hardware        : {inference_engine.device}", flush=True)
+    print(f"⚙️  Hardware        : {inference_engine.device.type.upper()}", flush=True)
     print("=" * 65, flush=True)
     print("[*] Tekan Ctrl+C di terminal untuk menghentikan server.", flush=True)
 
